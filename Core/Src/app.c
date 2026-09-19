@@ -231,11 +231,12 @@ static uint8_t tx_dma_frame[UART_FRAME_MAX_LEN];
 static volatile bool tx_busy = false;
 static uint16_t tx_sequence = 0U;
 
-/* ============================ Prototypes ================================== *//* ============================ Prototypes ================================== */
+/* ============================ Prototypes ================================== */
 static uint32_t App_EnterCritical(void);
 static void App_ExitCritical(uint32_t primask);
-
 static float ClampFloat(float x, float mn, float mx);
+static bool RefWithinLimit(float value, float limit);
+static void UART_RecordInvalidFrame(void);
 
 static void PIDF_RecalcD(PIDF_t *pid);
 static void PIDF_Reset(PIDF_t *pid);
@@ -272,8 +273,437 @@ static void Motor_StopOutput(Motor_t *motor);
 static void Motor_ResetAllPID(void);
 
 static void DWT_TimebaseInit(void);
+static void App_WatchdogInit(void);
+static void App_WatchdogRefresh(void);
 static bool App_EstopIsActive(void);
 static void App_SetDriverEnable(bool enable);
+static void App_SafetyService(void);
+static void App_ZeroReferences(void);
+static void App_Disarm(void);
+static bool App_TryArm(void);
+static void Sysid_Stop(bool disarm_after);
+
+static uint16_t CRC16_CCITT_FALSE(const uint8_t *data, uint16_t len);
+static uint16_t ReadU16LE(const uint8_t *p);
+static void WriteU16LE(uint8_t *p, uint16_t value);
+static uint32_t ReadU32LE(const uint8_t *p);
+static void WriteU32LE(uint8_t *p, uint32_t value);
+static void WriteI32LE(uint8_t *p, int32_t value);
+static float ReadFloatLE(const uint8_t *p);
+static void WriteFloatLE(uint8_t *p, float value);
+static Motor_t *MotorFromId(uint8_t motor_id);
+static int32_t EncoderCountFromId(uint8_t motor_id);
+
+static void UART_ResetParser(void);
+static void UART_ProcessByte(uint8_t b);
+static void UART_ProcessFrame(const uint8_t *frame, uint8_t len);
+static void UART_StartReceiveToIdleDMA(void);
+static bool UART_QueueFrameRaw(const uint8_t *frame, uint8_t len);
+static bool UART_QueuePacket(uint8_t type, uint16_t seq,
+                             const uint8_t *payload, uint8_t payload_len);
+static void UART_QueueError(uint16_t request_seq, uint8_t request_type, uint8_t code);
+static void UART_QueueFeedback(void);
+static void UART_QueueDiagnostics(uint16_t request_seq);
+static void UART_QueueSysidSample(void);
+static void UART_QueuePIDResponse(uint16_t request_seq, uint8_t motor_id, const PIDF_t *pid);
+static void UART_QueueInfoResponse(uint16_t request_seq);
+static void UART_ServiceTx(void);
+
+static void CV_EncoderUpdate(void);
+static void App_ControlUpdate(void);
+static void App_UpdateDebugSnapshot(void);
+
+/* =========================== Utility ====================================== */
+static uint32_t App_EnterCritical(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    return primask;
+}
+
+static void App_ExitCritical(uint32_t primask)
+{
+    if (primask == 0U) {
+        __enable_irq();
+    }
+}
+
+static float ClampFloat(float x, float mn, float mx)
+{
+    if (x > mx) {
+        return mx;
+    }
+    if (x < mn) {
+        return mn;
+    }
+    return x;
+}
+
+static bool RefWithinLimit(float value, float limit)
+{
+    return isfinite(value) && isfinite(limit) && limit > 0.0f &&
+           fabsf(value) <= limit;
+}
+
+static void UART_RecordInvalidFrame(void)
+{
+    g_app_debug.uart_invalid_frames++;
+}
+
+/* =============================== PIDF ===================================== */
+static void PIDF_RecalcD(PIDF_t *pid)
+{
+    const float den = (2.0f * pid->Tf) + pid->Ts;
+
+    if (den <= 0.0f) {
+        pid->ad = 0.0f;
+        pid->bd = 0.0f;
+        return;
+    }
+
+    pid->ad = ((2.0f * pid->Tf) - pid->Ts) / den;
+    pid->bd = (2.0f * pid->Kd) / den;
+}
+
+static void PIDF_Reset(PIDF_t *pid)
+{
+    pid->integ = 0.0f;
+    pid->prev_err = 0.0f;
+    pid->d_state = 0.0f;
+}
+
+static void PIDF_Init(PIDF_t *pid,
+                      float Kp, float Ki, float Kd, float Kf,
+                      float Ts, float out_min, float out_max, float Tf)
+{
+    pid->Kp = Kp;
+    pid->Ki = Ki;
+    pid->Kd = Kd;
+    pid->Kf = Kf;
+    pid->Ts = Ts;
+    pid->Tf = Tf;
+    pid->out_min = out_min;
+    pid->out_max = out_max;
+
+    PIDF_Reset(pid);
+    PIDF_RecalcD(pid);
+}
+
+static void PIDF_SetTuning(PIDF_t *pid,
+                           float Kp, float Ki, float Kd, float Tf)
+{
+    pid->Kp = Kp;
+    pid->Ki = Ki;
+    pid->Kd = Kd;
+    pid->Tf = Tf;
+
+    PIDF_RecalcD(pid);
+    PIDF_Reset(pid);
+}
+
+static float PIDF_Step(PIDF_t *pid, float ref, float meas)
+{
+    const float e = ref - meas;
+    const float de = e - pid->prev_err;
+
+    const float d_new =
+        (pid->ad * pid->d_state) +
+        (pid->bd * de);
+
+    const float integ_candidate =
+        pid->integ +
+        (0.5f * pid->Ts * (e + pid->prev_err));
+
+    const float u_unsat =
+        (pid->Kp * e) +
+        (pid->Ki * integ_candidate) +
+        d_new +
+        (pid->Kf * ref);
+
+    const float u_sat =
+        ClampFloat(u_unsat, pid->out_min, pid->out_max);
+
+    bool allow_integrate = false;
+
+    if (u_sat == u_unsat) {
+        allow_integrate = true;
+    } else if ((u_sat >= pid->out_max && e < 0.0f) ||
+               (u_sat <= pid->out_min && e > 0.0f)) {
+        allow_integrate = true;
+    }
+
+    if (allow_integrate) {
+        pid->integ = integ_candidate;
+    }
+
+    pid->d_state = d_new;
+    pid->prev_err = e;
+
+    return u_sat;
+}
+
+/* ============================== Motors ==================================== */
+static void Motor_Init(Motor_t *motor,
+                       float counts_per_rev,
+                       float encoder_sign,
+                       float motor_sign,
+                       EncoderType_t encoder_type,
+                       TIM_HandleTypeDef *encoder_timer,
+                       DriverType_t driver_type,
+                       TIM_HandleTypeDef *pwm_timer,
+                       uint32_t pwm_ch_forward,
+                       uint32_t pwm_ch_reverse,
+                       GPIO_TypeDef *in1_port,
+                       uint16_t in1_pin,
+                       GPIO_TypeDef *in2_port,
+                       uint16_t in2_pin,
+                       float Kp, float Ki, float Kd, float Tf)
+{
+    memset(motor, 0, sizeof(*motor));
+
+    motor->counts_per_rev = counts_per_rev;
+    motor->encoder_sign = encoder_sign;
+    motor->motor_sign = motor_sign;
+    motor->encoder_type = encoder_type;
+    motor->encoder_timer = encoder_timer;
+
+    motor->driver_type = driver_type;
+    motor->pwm_timer = pwm_timer;
+    motor->pwm_ch_forward = pwm_ch_forward;
+    motor->pwm_ch_reverse = pwm_ch_reverse;
+
+    motor->in1_port = in1_port;
+    motor->in1_pin = in1_pin;
+    motor->in2_port = in2_port;
+    motor->in2_pin = in2_pin;
+
+    const float pwm_max = (float)__HAL_TIM_GET_AUTORELOAD(pwm_timer);
+
+    PIDF_Init(&motor->pid,
+              Kp, Ki, Kd, 0.0f,
+              APP_CONTROL_TS_S,
+              -pwm_max,
+              pwm_max,
+              Tf);
+}
+
+static void Motor_RecordBoundary(Motor_t *motor, uint32_t count, uint32_t timestamp)
+{
+    motor->mt.edge_count = count;
+    motor->mt.edge_time_cycles = timestamp;
+    motor->mt.edge_sequence++;
+}
+
+static int32_t Motor_CountDifference(const Motor_t *motor,
+                                     uint32_t current,
+                                     uint32_t previous)
+{
+    if (motor->encoder_type == ENC_TIMER_16) {
+        return (int32_t)(int16_t)((uint16_t)current - (uint16_t)previous);
+    }
+
+    return (int32_t)(current - previous);
+}
+
+static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
+{
+    uint32_t edge_count;
+    uint32_t edge_time;
+    uint32_t edge_sequence;
+
+    uint32_t primask = App_EnterCritical();
+    edge_count = motor->mt.edge_count;
+    edge_time = motor->mt.edge_time_cycles;
+    edge_sequence = motor->mt.edge_sequence;
+    App_ExitCritical(primask);
+
+    if (edge_sequence != motor->mt.prev_edge_sequence) {
+        if (!motor->mt.initialized) {
+            motor->mt.prev_edge_count = edge_count;
+            motor->mt.prev_edge_time_cycles = edge_time;
+            motor->mt.prev_edge_sequence = edge_sequence;
+            motor->mt.initialized = true;
+            motor->rpm = 0.0f;
+            return;
+        }
+
+        const int32_t delta_count =
+            Motor_CountDifference(motor, edge_count, motor->mt.prev_edge_count);
+
+        const uint32_t delta_cycles =
+            edge_time - motor->mt.prev_edge_time_cycles;
+
+        if (delta_cycles > 0U && delta_count != 0 && motor->counts_per_rev > 0.0f) {
+            motor->rpm =
+                motor->encoder_sign *
+                ((60.0f * (float)cpu_clock_hz * (float)delta_count) /
+                 (motor->counts_per_rev * (float)delta_cycles));
+        }
+
+        motor->mt.prev_edge_count = edge_count;
+        motor->mt.prev_edge_time_cycles = edge_time;
+        motor->mt.prev_edge_sequence = edge_sequence;
+        return;
+    }
+
+    if (motor->mt.initialized) {
+        const uint32_t age_cycles = now_cycles - edge_time;
+        if (age_cycles >= mt_zero_timeout_cycles) {
+            motor->rpm = 0.0f;
+        }
+    }
+}
+
+static void Motor_ApplyOutput(Motor_t *motor, float command)
+{
+    const uint32_t arr = __HAL_TIM_GET_AUTORELOAD(motor->pwm_timer);
+
+    if (!isfinite(command) || !isfinite(motor->motor_sign)) {
+        motor->last_output = 0.0f;
+        app_fault_flags |= APP_STATUS_INVALID_OUTPUT;
+        command = 0.0f;
+    }
+
+    float u = command * motor->motor_sign;
+
+    if (!isfinite(u)) {
+        motor->last_output = 0.0f;
+        app_fault_flags |= APP_STATUS_INVALID_OUTPUT;
+        u = 0.0f;
+    }
+
+    u = ClampFloat(u, -(float)arr, (float)arr);
+    motor->last_output = u;
+
+    const uint32_t duty =
+        (uint32_t)(fabsf(u) + 0.5f);
+
+    if (motor->driver_type == DRIVER_BTS7960) {
+        if (u > 0.0f) {
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, duty);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_reverse, 0U);
+        } else if (u < 0.0f) {
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, 0U);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_reverse, duty);
+        } else {
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, 0U);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_reverse, 0U);
+        }
+        return;
+    }
+
+    if (u > 0.0f) {
+        HAL_GPIO_WritePin(motor->in1_port, motor->in1_pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(motor->in2_port, motor->in2_pin, GPIO_PIN_RESET);
+    } else if (u < 0.0f) {
+        HAL_GPIO_WritePin(motor->in1_port, motor->in1_pin, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(motor->in2_port, motor->in2_pin, GPIO_PIN_SET);
+    } else {
+        HAL_GPIO_WritePin(motor->in1_port, motor->in1_pin, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(motor->in2_port, motor->in2_pin, GPIO_PIN_RESET);
+    }
+
+    __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, duty);
+}
+
+static void Motor_ApplyDutyNormalized(Motor_t *motor, float duty)
+{
+    const float arr = (float)__HAL_TIM_GET_AUTORELOAD(motor->pwm_timer);
+    const float normalized = ClampFloat(duty, -1.0f, 1.0f);
+    Motor_ApplyOutput(motor, normalized * arr);
+}
+
+static void Motor_StopOutput(Motor_t *motor)
+{
+    Motor_ApplyOutput(motor, 0.0f);
+}
+
+static void Motor_ResetAllPID(void)
+{
+    PIDF_Reset(&motorWR.pid);
+    PIDF_Reset(&motorWL.pid);
+    PIDF_Reset(&motorBR.pid);
+    PIDF_Reset(&motorBL.pid);
+    PIDF_Reset(&motorCV.pid);
+}
+
+/* ============================ Time / safety ================================ */
+static void DWT_TimebaseInit(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0U;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    cpu_clock_hz = HAL_RCC_GetHCLKFreq();
+    mt_zero_timeout_cycles =
+        (cpu_clock_hz / 1000U) * APP_MT_ZERO_TIMEOUT_MS;
+}
+
+static void App_WatchdogInit(void)
+{
+#ifdef __HAL_DBGMCU_FREEZE_IWDG
+    __HAL_DBGMCU_FREEZE_IWDG();
+#endif
+
+    uint32_t reload = APP_WATCHDOG_TIMEOUT_MS;
+    if (reload == 0U) {
+        reload = 1U;
+    }
+    if (reload > 4095U) {
+        reload = 4095U;
+    }
+
+    IWDG->KR = 0x5555U;
+    IWDG->PR = 0x03U;
+    IWDG->RLR = reload - 1U;
+    while (IWDG->SR != 0U) {
+    }
+    IWDG->KR = 0xAAAAU;
+    IWDG->KR = 0xCCCCU;
+}
+
+static void App_WatchdogRefresh(void)
+{
+    IWDG->KR = 0xAAAAU;
+}
+
+void App_EmergencyShutdown(void)
+{
+    TIM3->CCR1 = 0U;
+    TIM3->CCR2 = 0U;
+    TIM3->CCR3 = 0U;
+    TIM3->CCR4 = 0U;
+    TIM9->CCR1 = 0U;
+    TIM9->CCR2 = 0U;
+    TIM11->CCR1 = 0U;
+
+    GPIOB->BSRR =
+        ((uint32_t)(WR_en_Pin | WL_en_Pin | STBY_Pin |
+                    BR_in1_Pin | BR_in2_Pin | BL_in1_Pin | BL_in2_Pin) << 16U);
+    GPIOA->BSRR =
+        ((uint32_t)(CV_in1_Pin | CV_in2_Pin) << 16U);
+}
+
+static bool App_EstopIsActive(void)
+{
+    const GPIO_PinState state = HAL_GPIO_ReadPin(ESTOP_GPIO_Port, ESTOP_Pin);
+
+#if APP_ESTOP_ACTIVE_LOW
+    return (state == GPIO_PIN_RESET);
+#else
+    return (state == GPIO_PIN_SET);
+#endif
+}
+
+static void App_SetDriverEnable(bool enable)
+{
+    const GPIO_PinState state = enable ? GPIO_PIN_SET : GPIO_PIN_RESET;
+
+    HAL_GPIO_WritePin(WR_en_GPIO_Port, WR_en_Pin, state);
+    HAL_GPIO_WritePin(WL_en_GPIO_Port, WL_en_Pin, state);
+    HAL_GPIO_WritePin(STBY_GPIO_Port, STBY_Pin, state);
+}
+
 static void App_SafetyService(void)
 {
     const bool active = App_EstopIsActive();
@@ -297,10 +727,6 @@ static void App_SafetyService(void)
         }
     }
 
-    /*
-     * Releasing ESTOP never re-enables the power stages automatically.
-     * A fresh ARM command is required.
-     */
     previous_estop_active = active;
 }
 
@@ -933,7 +1359,7 @@ static void UART_ServiceTx(void)
     }
 }
 
-/* ============================= Encoders =================================== *//* ============================= Encoders =================================== */
+/* ============================= Encoders =================================== */
 void App_EncoderEdgeIRQ(TIM_HandleTypeDef *htim)
 {
     if (!app_initialized || htim == NULL) {
@@ -1077,7 +1503,7 @@ static void App_ControlUpdate(void)
     UART_QueueFeedback();
 }
 
-static void App_UpdateDebugSnapshot(void)static void App_UpdateDebugSnapshot(void)
+static void App_UpdateDebugSnapshot(void)
 {
     uint32_t status = app_fault_flags;
 
