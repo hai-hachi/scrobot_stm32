@@ -1,0 +1,131 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.h
+  * @brief          : Header for main.c file.
+  *                   This file contains the common defines of the application.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __MAIN_H
+#define __MAIN_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f4xx_hal.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Exported types ------------------------------------------------------------*/
+/* USER CODE BEGIN ET */
+
+/* USER CODE END ET */
+
+/* Exported constants --------------------------------------------------------*/
+/* USER CODE BEGIN EC */
+
+/* USER CODE END EC */
+
+/* Exported macro ------------------------------------------------------------*/
+/* USER CODE BEGIN EM */
+
+/* USER CODE END EM */
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
+/* Exported functions prototypes ---------------------------------------------*/
+void Error_Handler(void);
+
+/* USER CODE BEGIN EFP */
+
+/* USER CODE END EFP */
+
+/* Private defines -----------------------------------------------------------*/
+#define WL_encA_Pin GPIO_PIN_0
+#define WL_encA_GPIO_Port GPIOA
+#define WL_encB_Pin GPIO_PIN_1
+#define WL_encB_GPIO_Port GPIOA
+#define BR_pwm_Pin GPIO_PIN_2
+#define BR_pwm_GPIO_Port GPIOA
+#define BL_pwm_Pin GPIO_PIN_3
+#define BL_pwm_GPIO_Port GPIOA
+#define ESTOP_Pin GPIO_PIN_4
+#define ESTOP_GPIO_Port GPIOA
+#define WR_encA_Pin GPIO_PIN_5
+#define WR_encA_GPIO_Port GPIOA
+#define WR_pwmR_Pin GPIO_PIN_6
+#define WR_pwmR_GPIO_Port GPIOA
+#define WR_pwmL_Pin GPIO_PIN_7
+#define WR_pwmL_GPIO_Port GPIOA
+#define WL_pwmR_Pin GPIO_PIN_0
+#define WL_pwmR_GPIO_Port GPIOB
+#define WL_pwmL_Pin GPIO_PIN_1
+#define WL_pwmL_GPIO_Port GPIOB
+#define STBY_Pin GPIO_PIN_2
+#define STBY_GPIO_Port GPIOB
+#define CV_encB_Pin GPIO_PIN_10
+#define CV_encB_GPIO_Port GPIOB
+#define CV_encB_EXTI_IRQn EXTI15_10_IRQn
+#define BR_in1_Pin GPIO_PIN_12
+#define BR_in1_GPIO_Port GPIOB
+#define BR_in2_Pin GPIO_PIN_13
+#define BR_in2_GPIO_Port GPIOB
+#define BL_in1_Pin GPIO_PIN_14
+#define BL_in1_GPIO_Port GPIOB
+#define BL_in2_Pin GPIO_PIN_15
+#define BL_in2_GPIO_Port GPIOB
+#define BR_encA_Pin GPIO_PIN_8
+#define BR_encA_GPIO_Port GPIOA
+#define BR_encB_Pin GPIO_PIN_9
+#define BR_encB_GPIO_Port GPIOA
+#define CV_in1_Pin GPIO_PIN_10
+#define CV_in1_GPIO_Port GPIOA
+#define TX_Pin GPIO_PIN_11
+#define TX_GPIO_Port GPIOA
+#define RX_Pin GPIO_PIN_12
+#define RX_GPIO_Port GPIOA
+#define CV_in2_Pin GPIO_PIN_15
+#define CV_in2_GPIO_Port GPIOA
+#define WR_encB_Pin GPIO_PIN_3
+#define WR_encB_GPIO_Port GPIOB
+#define WR_en_Pin GPIO_PIN_4
+#define WR_en_GPIO_Port GPIOB
+#define WL_en_Pin GPIO_PIN_5
+#define WL_en_GPIO_Port GPIOB
+#define BL_encA_Pin GPIO_PIN_6
+#define BL_encA_GPIO_Port GPIOB
+#define BL_encB_Pin GPIO_PIN_7
+#define BL_encB_GPIO_Port GPIOB
+#define CV_encA_Pin GPIO_PIN_8
+#define CV_encA_GPIO_Port GPIOB
+#define CV_encA_EXTI_IRQn EXTI9_5_IRQn
+#define CV_pwm_Pin GPIO_PIN_9
+#define CV_pwm_GPIO_Port GPIOB
+
+/* USER CODE BEGIN Private defines */
+
+/* USER CODE END Private defines */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __MAIN_H */
