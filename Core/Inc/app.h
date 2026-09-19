@@ -9,26 +9,31 @@ extern "C" {
 
 enum
 {
-    APP_STATUS_ESTOP              = (1UL << 0),
-    APP_STATUS_COMM_TIMEOUT       = (1UL << 1),
-    APP_STATUS_SYSID_MODE         = (1UL << 2),
-    APP_STATUS_PID_TEST_MODE      = (1UL << 3),
+    APP_STATUS_ARMED              = (1UL << 0),
+    APP_STATUS_ESTOP              = (1UL << 1),
+    APP_STATUS_COMM_TIMEOUT       = (1UL << 2),
+    APP_STATUS_SYSID_MODE         = (1UL << 3),
     APP_STATUS_UART_ERROR_SEEN    = (1UL << 4),
     APP_STATUS_INVALID_OUTPUT     = (1UL << 5),
-    APP_STATUS_TX_QUEUE_DROP_SEEN = (1UL << 6)
+    APP_STATUS_TX_QUEUE_DROP_SEEN = (1UL << 6),
+    APP_STATUS_INVALID_COMMAND    = (1UL << 7)
 };
 
 /*
  * Live Expression / debugger snapshot.
  *
- * This is deliberately not used as a control-command interface. It exposes
- * the internal low-level state without changing the UART protocol.
+ * This is deliberately not a control-command interface. It exposes low-level
+ * state for fast bring-up without requiring the UART host.
  */
 typedef struct
 {
     volatile uint32_t control_tick;
     volatile uint32_t status_flags;
     volatile uint32_t reset_flags_raw;
+    volatile uint16_t last_setpoint_seq;
+    volatile uint16_t sysid_command_seq;
+    volatile uint8_t sysid_motor_id;
+    volatile float sysid_duty;
 
     volatile int32_t encoder_count_wr;
     volatile int32_t encoder_count_wl;
@@ -48,7 +53,7 @@ typedef struct
     volatile float rpm_bl;
     volatile float rpm_cv;
 
-    /* Controller / open-loop command after sign and output limiting, in PWM counts. */
+    /* Controller/open-loop command after sign and output limiting, PWM counts. */
     volatile float output_wr;
     volatile float output_wl;
     volatile float output_br;
