@@ -5,7 +5,7 @@
 #define APP_FW_VERSION_MAJOR              0U
 #define APP_FW_VERSION_MINOR              2U
 #define APP_FW_VERSION_PATCH              0U
-#define APP_PROTOCOL_VERSION              1U
+#define APP_PROTOCOL_VERSION              2U
 
 /* ---------------- Control loop ---------------- */
 #define APP_CONTROL_TS_S                  0.010f      /* TIM10 = 100 Hz */
