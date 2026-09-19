@@ -7,8 +7,68 @@ extern "C" {
 
 #include "stm32f4xx_hal.h"
 
+enum
+{
+    APP_STATUS_ESTOP              = (1UL << 0),
+    APP_STATUS_COMM_TIMEOUT       = (1UL << 1),
+    APP_STATUS_SYSID_MODE         = (1UL << 2),
+    APP_STATUS_PID_TEST_MODE      = (1UL << 3),
+    APP_STATUS_UART_ERROR_SEEN    = (1UL << 4),
+    APP_STATUS_INVALID_OUTPUT     = (1UL << 5),
+    APP_STATUS_TX_QUEUE_DROP_SEEN = (1UL << 6)
+};
+
+/*
+ * Live Expression / debugger snapshot.
+ *
+ * This is deliberately not used as a control-command interface. It exposes
+ * the internal low-level state without changing the UART protocol.
+ */
+typedef struct
+{
+    volatile uint32_t control_tick;
+    volatile uint32_t status_flags;
+    volatile uint32_t reset_flags_raw;
+
+    volatile int32_t encoder_count_wr;
+    volatile int32_t encoder_count_wl;
+    volatile int32_t encoder_count_br;
+    volatile int32_t encoder_count_bl;
+    volatile int32_t encoder_count_cv;
+
+    volatile float ref_rpm_wr;
+    volatile float ref_rpm_wl;
+    volatile float ref_rpm_br;
+    volatile float ref_rpm_bl;
+    volatile float ref_rpm_cv;
+
+    volatile float rpm_wr;
+    volatile float rpm_wl;
+    volatile float rpm_br;
+    volatile float rpm_bl;
+    volatile float rpm_cv;
+
+    /* Controller / open-loop command after sign and output limiting, in PWM counts. */
+    volatile float output_wr;
+    volatile float output_wl;
+    volatile float output_br;
+    volatile float output_bl;
+    volatile float output_cv;
+
+    volatile uint32_t uart_rx_frames_ok;
+    volatile uint32_t uart_crc_errors;
+    volatile uint32_t uart_invalid_frames;
+    volatile uint32_t uart_errors;
+    volatile uint32_t uart_tx_queue_drops;
+} AppDebug_t;
+
+extern volatile AppDebug_t g_app_debug;
+
 void App_Init(void);
 void App_Task(void);
+
+/* Immediate low-level output shutdown for Error_Handler / CPU fault handlers. */
+void App_EmergencyShutdown(void);
 
 /* Called from USER CODE blocks at the top of hardware-encoder IRQ handlers. */
 void App_EncoderEdgeIRQ(TIM_HandleTypeDef *htim);

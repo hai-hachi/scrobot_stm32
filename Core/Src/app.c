@@ -182,6 +182,7 @@ typedef struct
 {
     volatile float ref_rpm;
     volatile float rpm;
+    volatile float last_output;
 
     float counts_per_rev;
     float encoder_sign;
@@ -210,6 +211,10 @@ static Motor_t motorWL;
 static Motor_t motorBR;
 static Motor_t motorBL;
 static Motor_t motorCV;
+
+volatile AppDebug_t g_app_debug = {0};
+
+static volatile uint32_t app_fault_flags = 0U;
 
 /* CV software quadrature counter. */
 static volatile int32_t cv_encoder_count = 0;
@@ -324,6 +329,11 @@ static bool App_EstopIsActive(void);
 static void App_SetDriverEnable(bool enable);
 static void App_SafetyService(void);
 static void App_ControlUpdate(void);
+static void App_UpdateDebugSnapshot(void);
+static void App_WatchdogInit(void);
+static void App_WatchdogRefresh(void);
+static bool RefWithinLimit(float value, float limit);
+static void UART_RecordInvalidFrame(void);
 static void CV_EncoderUpdate(void);
 
 static uint8_t CRC8(const uint8_t *data, uint16_t len);
@@ -372,6 +382,17 @@ static float ClampFloat(float x, float mn, float mx)
         return mn;
     }
     return x;
+}
+
+static bool RefWithinLimit(float value, float limit)
+{
+    return isfinite(value) && isfinite(limit) && limit > 0.0f &&
+           fabsf(value) <= limit;
+}
+
+static void UART_RecordInvalidFrame(void)
+{
+    g_app_debug.uart_invalid_frames++;
 }
 
 /* =============================== PIDF ===================================== */
@@ -594,9 +615,23 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
 static void Motor_ApplyOutput(Motor_t *motor, float command)
 {
     const uint32_t arr = __HAL_TIM_GET_AUTORELOAD(motor->pwm_timer);
+
+    if (!isfinite(command) || !isfinite(motor->motor_sign)) {
+        motor->last_output = 0.0f;
+        app_fault_flags |= APP_STATUS_INVALID_OUTPUT;
+        command = 0.0f;
+    }
+
     float u = command * motor->motor_sign;
 
+    if (!isfinite(u)) {
+        motor->last_output = 0.0f;
+        app_fault_flags |= APP_STATUS_INVALID_OUTPUT;
+        u = 0.0f;
+    }
+
     u = ClampFloat(u, -(float)arr, (float)arr);
+    motor->last_output = u;
 
     const uint32_t duty =
         (uint32_t)(fabsf(u) + 0.5f);
@@ -676,6 +711,56 @@ static void DWT_TimebaseInit(void)
     cpu_clock_hz = HAL_RCC_GetHCLKFreq();
     mt_zero_timeout_cycles =
         (cpu_clock_hz / 1000U) * APP_MT_ZERO_TIMEOUT_MS;
+}
+
+static void App_WatchdogInit(void)
+{
+    /*
+     * LSI is nominally ~32 kHz. Prescaler /32 gives approximately a 1 ms tick.
+     * The watchdog is started only after TIM10 is running.
+     */
+    uint32_t reload = APP_WATCHDOG_TIMEOUT_MS;
+    if (reload == 0U) {
+        reload = 1U;
+    }
+    if (reload > 4095U) {
+        reload = 4095U;
+    }
+
+    IWDG->KR = 0x5555U; /* Enable PR/RLR writes. */
+    IWDG->PR = 0x03U;   /* Prescaler /32. */
+    IWDG->RLR = reload - 1U;
+    while (IWDG->SR != 0U) {
+        /* Wait for register update before starting the watchdog. */
+    }
+    IWDG->KR = 0xAAAAU; /* Initial reload. */
+    IWDG->KR = 0xCCCCU; /* Start. */
+}
+
+static void App_WatchdogRefresh(void)
+{
+    IWDG->KR = 0xAAAAU;
+}
+
+void App_EmergencyShutdown(void)
+{
+    /*
+     * Use direct peripheral registers so the shutdown path does not depend on
+     * Motor_t initialization or the scheduler.
+     */
+    TIM3->CCR1 = 0U;
+    TIM3->CCR2 = 0U;
+    TIM3->CCR3 = 0U;
+    TIM3->CCR4 = 0U;
+    TIM9->CCR1 = 0U;
+    TIM9->CCR2 = 0U;
+    TIM11->CCR1 = 0U;
+
+    GPIOB->BSRR =
+        ((uint32_t)(WR_en_Pin | WL_en_Pin | STBY_Pin |
+                    BR_in1_Pin | BR_in2_Pin | BL_in1_Pin | BL_in2_Pin) << 16U);
+    GPIOA->BSRR =
+        ((uint32_t)(CV_in1_Pin | CV_in2_Pin) << 16U);
 }
 
 static bool App_EstopIsActive(void)
@@ -926,8 +1011,11 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
     const uint8_t calculated_crc = CRC8(&frame[2], (uint16_t)(len - 3U));
 
     if (received_crc != calculated_crc) {
+        g_app_debug.uart_crc_errors++;
         return;
     }
+
+    g_app_debug.uart_rx_frames_ok++;
 
     const uint8_t type = frame[2];
 
@@ -949,7 +1037,9 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
         const float wr_ref = ReadFloatLE(&frame[3]);
         const float wl_ref = ReadFloatLE(&frame[7]);
 
-        if (!isfinite(wr_ref) || !isfinite(wl_ref)) {
+        if (!RefWithinLimit(wr_ref, APP_MAX_RPM_WR) ||
+            !RefWithinLimit(wl_ref, APP_MAX_RPM_WL)) {
+            UART_RecordInvalidFrame();
             return;
         }
 
@@ -971,7 +1061,10 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
         const float bl_ref = ReadFloatLE(&frame[7]);
         const float cv_ref = ReadFloatLE(&frame[11]);
 
-        if (!isfinite(br_ref) || !isfinite(bl_ref) || !isfinite(cv_ref)) {
+        if (!RefWithinLimit(br_ref, APP_MAX_RPM_BR) ||
+            !RefWithinLimit(bl_ref, APP_MAX_RPM_BL) ||
+            !RefWithinLimit(cv_ref, APP_MAX_RPM_CV)) {
+            UART_RecordInvalidFrame();
             return;
         }
 
@@ -1002,8 +1095,18 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
             /* Reject invalid duty rather than silently changing the experiment input. */
             for (uint8_t i = 0U; i < TUNING_MOTOR_COUNT; ++i) {
                 if (cmd.value[i] < -1.0f || cmd.value[i] > 1.0f) {
+                    UART_RecordInvalidFrame();
                     return;
                 }
+            }
+        } else {
+            if (!RefWithinLimit(cmd.value[0], APP_MAX_RPM_WR) ||
+                !RefWithinLimit(cmd.value[1], APP_MAX_RPM_WL) ||
+                !RefWithinLimit(cmd.value[2], APP_MAX_RPM_BR) ||
+                !RefWithinLimit(cmd.value[3], APP_MAX_RPM_BL) ||
+                !RefWithinLimit(cmd.value[4], APP_MAX_RPM_CV)) {
+                UART_RecordInvalidFrame();
+                return;
             }
         }
 
@@ -1031,7 +1134,13 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
         const float Tf = ReadFloatLE(&frame[15]);
 
         if (!isfinite(Kp) || !isfinite(Ki) ||
-            !isfinite(Kd) || !isfinite(Tf) || Tf < 0.0f) {
+            !isfinite(Kd) || !isfinite(Tf) ||
+            Kp < 0.0f || Ki < 0.0f || Kd < 0.0f || Tf < 0.0f ||
+            Kp > APP_PID_GAIN_MAX ||
+            Ki > APP_PID_GAIN_MAX ||
+            Kd > APP_PID_GAIN_MAX ||
+            Tf > APP_PID_TF_MAX_S) {
+            UART_RecordInvalidFrame();
             return;
         }
 
@@ -1067,6 +1176,8 @@ static bool UART_QueueFrame(const uint8_t *frame, uint8_t len)
     const uint8_t next = (uint8_t)((tx_head + 1U) % TX_QUEUE_DEPTH);
 
     if (next == tx_tail) {
+        g_app_debug.uart_tx_queue_drops++;
+        app_fault_flags |= APP_STATUS_TX_QUEUE_DROP_SEEN;
         App_ExitCritical(primask);
         return false;
     }
@@ -1343,6 +1454,8 @@ static void Tuning_RunCurrentMode(void)
 
 static void App_ControlUpdate(void)
 {
+    g_app_debug.control_tick++;
+
     App_SafetyService();
 
     const uint32_t now_cycles = DWT->CYCCNT;
@@ -1427,12 +1540,61 @@ static void App_ControlUpdate(void)
      * 100 Hz TIM10 control rate. F1/F3 tuning mode suppresses this stream and
      * uses synchronized F2 packets instead. */
     UART_QueueNormalRPM(TYPE_RPM_NORMAL);
+
+    App_UpdateDebugSnapshot();
+}
+
+static void App_UpdateDebugSnapshot(void)
+{
+    uint32_t status = app_fault_flags;
+
+    if (estop_active) {
+        status |= APP_STATUS_ESTOP;
+    }
+    if (comm_timeout_active) {
+        status |= APP_STATUS_COMM_TIMEOUT;
+    }
+    if (app_mode == APP_MODE_SYSID) {
+        status |= APP_STATUS_SYSID_MODE;
+    } else if (app_mode == APP_MODE_PID_TEST) {
+        status |= APP_STATUS_PID_TEST_MODE;
+    }
+
+    g_app_debug.status_flags = status;
+
+    g_app_debug.encoder_count_wr = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+    g_app_debug.encoder_count_wl = (int32_t)__HAL_TIM_GET_COUNTER(&htim5);
+    g_app_debug.encoder_count_br = (int32_t)(int16_t)__HAL_TIM_GET_COUNTER(&htim1);
+    g_app_debug.encoder_count_bl = (int32_t)(int16_t)__HAL_TIM_GET_COUNTER(&htim4);
+    g_app_debug.encoder_count_cv = cv_encoder_count;
+
+    g_app_debug.ref_rpm_wr = motorWR.ref_rpm;
+    g_app_debug.ref_rpm_wl = motorWL.ref_rpm;
+    g_app_debug.ref_rpm_br = motorBR.ref_rpm;
+    g_app_debug.ref_rpm_bl = motorBL.ref_rpm;
+    g_app_debug.ref_rpm_cv = motorCV.ref_rpm;
+
+    g_app_debug.rpm_wr = motorWR.rpm;
+    g_app_debug.rpm_wl = motorWL.rpm;
+    g_app_debug.rpm_br = motorBR.rpm;
+    g_app_debug.rpm_bl = motorBL.rpm;
+    g_app_debug.rpm_cv = motorCV.rpm;
+
+    g_app_debug.output_wr = motorWR.last_output;
+    g_app_debug.output_wl = motorWL.last_output;
+    g_app_debug.output_br = motorBR.last_output;
+    g_app_debug.output_bl = motorBL.last_output;
+    g_app_debug.output_cv = motorCV.last_output;
 }
 
 /* ============================== Public ==================================== */
 void App_Init(void)
 {
     DWT_TimebaseInit();
+
+    /* Preserve the reset cause for Live Expression inspection, then clear it. */
+    g_app_debug.reset_flags_raw = RCC->CSR;
+    __HAL_RCC_CLEAR_RESET_FLAGS();
 
     /*
      * The uploaded CubeMX file still initializes USART6 at 115200.
@@ -1589,7 +1751,8 @@ void App_Init(void)
     App_SetDriverEnable(!estop_active);
 
     last_drive_cmd_ms = HAL_GetTick();
-    comm_timeout_active = false;
+    /* No A0 heartbeat has been received yet after boot. */
+    comm_timeout_active = true;
 
     app_mode = APP_MODE_NORMAL;
     tuning_pending_valid = false;
@@ -1603,15 +1766,31 @@ void App_Init(void)
     if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
         Error_Handler();
     }
+
+    App_UpdateDebugSnapshot();
+    App_WatchdogInit();
 }
 
 void App_Task(void)
 {
+    static uint32_t last_watchdog_control_tick = 0U;
+
     /* Fast local ESTOP polling in addition to the 100 Hz control callback. */
     App_SafetyService();
 
     /* Non-time-critical UART TX is kept outside the TIM10 ISR. */
     UART_ServiceTx();
+
+    /*
+     * Refresh the independent watchdog only if the control ISR is alive.
+     * This makes the watchdog cover both a stalled main loop and a stalled
+     * control scheduler.
+     */
+    const uint32_t tick = g_app_debug.control_tick;
+    if (tick != last_watchdog_control_tick) {
+        last_watchdog_control_tick = tick;
+        App_WatchdogRefresh();
+    }
 }
 
 /* ============================ HAL callbacks =============================== */
@@ -1659,7 +1838,11 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         return;
     }
 
+    g_app_debug.uart_errors++;
+    app_fault_flags |= APP_STATUS_UART_ERROR_SEEN;
+
     HAL_UART_DMAStop(&huart6);
     tx_busy = false;
+    UART_ResetParser();
     UART_StartReceiveToIdleDMA();
 }

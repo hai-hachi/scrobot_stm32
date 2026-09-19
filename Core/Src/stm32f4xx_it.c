@@ -76,6 +76,7 @@ extern UART_HandleTypeDef huart6;
   */
 void NMI_Handler(void)
 {
+  App_EmergencyShutdown();
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
@@ -91,6 +92,7 @@ void NMI_Handler(void)
   */
 void HardFault_Handler(void)
 {
+  App_EmergencyShutdown();
   /* USER CODE BEGIN HardFault_IRQn 0 */
 
   /* USER CODE END HardFault_IRQn 0 */
@@ -106,6 +108,7 @@ void HardFault_Handler(void)
   */
 void MemManage_Handler(void)
 {
+  App_EmergencyShutdown();
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
 
   /* USER CODE END MemoryManagement_IRQn 0 */
@@ -121,6 +124,7 @@ void MemManage_Handler(void)
   */
 void BusFault_Handler(void)
 {
+  App_EmergencyShutdown();
   /* USER CODE BEGIN BusFault_IRQn 0 */
 
   /* USER CODE END BusFault_IRQn 0 */
@@ -136,6 +140,7 @@ void BusFault_Handler(void)
   */
 void UsageFault_Handler(void)
 {
+  App_EmergencyShutdown();
   /* USER CODE BEGIN UsageFault_IRQn 0 */
 
   /* USER CODE END UsageFault_IRQn 0 */
