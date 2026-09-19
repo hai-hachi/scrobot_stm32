@@ -228,7 +228,6 @@ static TxPacket_t tx_queue[TX_QUEUE_DEPTH];
 static volatile uint8_t tx_head = 0U;
 static volatile uint8_t tx_tail = 0U;
 static uint8_t tx_dma_frame[UART_FRAME_MAX_LEN];
-static volatile bool tx_busy = false;
 static uint16_t tx_sequence = 0U;
 
 /* ============================ Prototypes ================================== */
@@ -1332,10 +1331,6 @@ static void UART_StartReceiveToIdleDMA(void)
 
 static void UART_ServiceTx(void)
 {
-    if (tx_busy || huart6.hdmatx == NULL) {
-        return;
-    }
-
     uint8_t tail;
     uint8_t len;
 
@@ -1351,11 +1346,24 @@ static void UART_ServiceTx(void)
     memcpy(tx_dma_frame, tx_queue[tail].data, len);
     App_ExitCritical(primask);
 
-    if (HAL_UART_Transmit_DMA(&huart6, tx_dma_frame, len) == HAL_OK) {
+    /*
+     * TX intentionally uses polling rather than DMA.
+     *
+     * At 1 Mbaud a maximum-size protocol frame takes < 1 ms on the wire.
+     * This runs only from App_Task() in the main loop, so TIM10 and encoder
+     * interrupts still preempt it. RX remains DMA based.
+     */
+    const HAL_StatusTypeDef status =
+        HAL_UART_Transmit(&huart6, tx_dma_frame, len, 2U);
+
+    if (status == HAL_OK) {
         primask = App_EnterCritical();
         tx_tail = (uint8_t)((tail + 1U) % TX_QUEUE_DEPTH);
-        tx_busy = true;
+        g_app_debug.uart_tx_frames_ok++;
         App_ExitCritical(primask);
+    } else {
+        g_app_debug.uart_tx_errors++;
+        app_fault_flags |= APP_STATUS_UART_ERROR_SEEN;
     }
 }
 
@@ -1791,13 +1799,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     UART_StartReceiveToIdleDMA();
 }
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART6) {
-        tx_busy = false;
-    }
-}
-
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance != USART6) {
@@ -1808,7 +1809,6 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     app_fault_flags |= APP_STATUS_UART_ERROR_SEEN;
 
     HAL_UART_DMAStop(&huart6);
-    tx_busy = false;
     UART_ResetParser();
     UART_StartReceiveToIdleDMA();
 }
