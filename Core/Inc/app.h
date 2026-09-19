@@ -64,6 +64,8 @@ typedef struct
     volatile uint32_t uart_crc_errors;
     volatile uint32_t uart_invalid_frames;
     volatile uint32_t uart_errors;
+    volatile uint32_t uart_tx_frames_ok;
+    volatile uint32_t uart_tx_errors;
     volatile uint32_t uart_tx_queue_drops;
 } AppDebug_t;
 
