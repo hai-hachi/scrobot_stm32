@@ -1476,17 +1476,20 @@ static void App_ControlUpdate(void)
 
         /* Preserve normal telemetry semantics: TYPE 0x00 reports ESTOP active. */
         UART_QueueNormalRPM(TYPE_RPM_ESTOP);
+        App_UpdateDebugSnapshot();
         return;
     }
 
     if (tuning_exit_requested) {
         Tuning_ReturnToNormal();
+        App_UpdateDebugSnapshot();
         return;
     }
 
     if (app_mode != APP_MODE_NORMAL) {
         if ((HAL_GetTick() - last_tuning_cmd_ms) > APP_TUNING_TIMEOUT_MS) {
             Tuning_ReturnToNormal();
+            App_UpdateDebugSnapshot();
             return;
         }
 
@@ -1505,6 +1508,7 @@ static void App_ControlUpdate(void)
 
     if (app_mode != APP_MODE_NORMAL) {
         Tuning_RunCurrentMode();
+        App_UpdateDebugSnapshot();
         return;
     }
 
