@@ -652,13 +652,26 @@ static void App_WatchdogInit(void)
         reload = 4095U;
     }
 
-    IWDG->KR = 0x5555U;
-    IWDG->PR = 0x03U;
+    /*
+     * STM32F4 IWDG must be started so its LSI clock is running before waiting
+     * for prescaler/reload register updates. The previous sequence waited on
+     * IWDG->SR before starting IWDG, which could leave App_Init() stuck forever
+     * while TIM10 continued to run in interrupts.
+     */
+    IWDG->KR = 0xCCCCU; /* Start IWDG / LSI. */
+    IWDG->KR = 0x5555U; /* Enable PR/RLR writes. */
+    IWDG->PR = 0x03U;   /* Prescaler /32, nominally ~1 ms/tick at 32 kHz LSI. */
     IWDG->RLR = reload - 1U;
-    while (IWDG->SR != 0U) {
+
+    /* Bound the register-update wait so initialization can never deadlock. */
+    uint32_t guard = 1000000U;
+    while ((IWDG->SR != 0U) && (guard > 0U)) {
+        guard--;
     }
-    IWDG->KR = 0xAAAAU;
-    IWDG->KR = 0xCCCCU;
+
+    IWDG->KR = 0xAAAAU; /* Reload counter. */
+    g_app_debug.watchdog_started = 1U;
+    g_app_debug.watchdog_update_timeout = (guard == 0U) ? 1U : 0U;
 }
 
 static void App_WatchdogRefresh(void)
@@ -1736,18 +1749,25 @@ void App_Init(void)
 
     UART_StartReceiveToIdleDMA();
 
+    /*
+     * Start the watchdog before TIM10 so App_Init cannot leave the controller
+     * ISR running while main() is still blocked in watchdog initialization.
+     */
+    App_WatchdogInit();
+
     /* TIM10 is the 100 Hz controller scheduler. */
     if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
         Error_Handler();
     }
 
     App_UpdateDebugSnapshot();
-    App_WatchdogInit();
 }
 
 void App_Task(void)
 {
     static uint32_t last_watchdog_control_tick = 0U;
+
+    g_app_debug.main_loop_count++;
 
     /* Fast local ESTOP polling in addition to the 100 Hz control callback. */
     App_SafetyService();
