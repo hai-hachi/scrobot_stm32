@@ -407,11 +407,6 @@ static void WriteU32LE(uint8_t *p, uint32_t value)
     p[3] = (uint8_t)((value >> 24U) & 0xFFU);
 }
 
-static int32_t ReadI32LE(const uint8_t *p)
-{
-    return (int32_t)ReadU32LE(p);
-}
-
 static void WriteI32LE(uint8_t *p, int32_t value)
 {
     WriteU32LE(p, (uint32_t)value);
@@ -441,18 +436,6 @@ static Motor_t *MotorFromId(uint8_t motor_id)
         case MOTOR_ID_BL: return &motorBL;
         case MOTOR_ID_CV: return &motorCV;
         default: return NULL;
-    }
-}
-
-static float MaxRPMFromId(uint8_t motor_id)
-{
-    switch (motor_id) {
-        case MOTOR_ID_WR: return APP_MAX_RPM_WR;
-        case MOTOR_ID_WL: return APP_MAX_RPM_WL;
-        case MOTOR_ID_BR: return APP_MAX_RPM_BR;
-        case MOTOR_ID_BL: return APP_MAX_RPM_BL;
-        case MOTOR_ID_CV: return APP_MAX_RPM_CV;
-        default: return 0.0f;
     }
 }
 
