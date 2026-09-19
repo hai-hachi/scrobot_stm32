@@ -318,7 +318,6 @@ static void App_Disarm(void)
     armed = false;
     sysid_active = false;
     sysid_duty = 0.0f;
-    comm_timeout_active = true;
 
     App_ZeroReferences();
     Motor_StopOutput(&motorWR);
@@ -731,6 +730,7 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
                 UART_QueueError(seq, type, ERROR_BAD_LENGTH);
                 return;
             }
+            comm_timeout_active = false;
             App_Disarm();
             return;
 
@@ -865,6 +865,14 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
                 }
                 UART_QueuePIDResponse(seq, motor_id, &motor->pid);
             }
+            return;
+
+        case TYPE_DIAGNOSTICS:
+            if (payload_len != 0U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            UART_QueueDiagnostics(seq);
             return;
 
         case TYPE_INFO_REQUEST:
@@ -1021,6 +1029,7 @@ static void App_ControlUpdate(void)
 
     if (sysid_active) {
         if ((HAL_GetTick() - last_sysid_cmd_ms) > APP_TUNING_TIMEOUT_MS) {
+            comm_timeout_active = true;
             Sysid_Stop(true);
             App_UpdateDebugSnapshot();
             UART_QueueFeedback();
