@@ -58,11 +58,11 @@
 #define APP_MAX_RPM_CV                    600.0f
 
 /* Flip to -1.0f if measured RPM sign is opposite to the chosen positive direction. */
-#define APP_ENCODER_SIGN_WR               1.0f
+#define APP_ENCODER_SIGN_WR              -1.0f
 #define APP_ENCODER_SIGN_WL               1.0f
 #define APP_ENCODER_SIGN_BR              -1.0f
 #define APP_ENCODER_SIGN_BL               1.0f
-#define APP_ENCODER_SIGN_CV               1.0f
+#define APP_ENCODER_SIGN_CV              -1.0f
 
 /* Flip to -1.0f if positive controller output rotates the motor in the wrong direction. */
 #define APP_MOTOR_SIGN_WR                 1.0f
