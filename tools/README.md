@@ -65,3 +65,11 @@ python sysid.py --port /dev/ttyAMA0 sweep --motor WR --start 0 --stop 0.5 --step
 CSV files are written under `tools/data/` unless `--output` is supplied.
 
 The Python tools should ultimately run on the Pi so Wi-Fi/SSH timing does not enter the motor identification loop. MATLAB can analyze the resulting CSV afterward.
+
+## Closed-loop PID test
+
+```bash
+python pid_test.py --port /dev/ttyAMA0 --motor WR --rpm 100 --kp 1.0 --ki 2.0 --kd 0 --tf 0.01
+```
+
+The script writes PID gains, arms the controller, sends a 50 Hz unified setpoint heartbeat, logs 100 Hz feedback, then commands zero and disarms.
