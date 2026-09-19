@@ -6,7 +6,7 @@ import serial
 from .protocol import (
     FrameParser, encode_frame,
     TYPE_SETPOINT, TYPE_ARM, TYPE_DISARM, TYPE_SYSID_COMMAND, TYPE_SYSID_STOP,
-    TYPE_PID_SET, TYPE_PID_GET, TYPE_INFO_REQUEST,
+    TYPE_PID_SET, TYPE_PID_GET, TYPE_INFO_REQUEST, TYPE_DIAGNOSTICS,
     pack_setpoint, pack_sysid_command, pack_pid,
 )
 
@@ -40,6 +40,9 @@ class SerialClient:
 
     def info(self) -> int:
         return self.send(TYPE_INFO_REQUEST)
+
+    def diagnostics(self) -> int:
+        return self.send(TYPE_DIAGNOSTICS)
 
     def setpoint(self, wr=0.0, wl=0.0, br=0.0, bl=0.0, cv=0.0) -> int:
         return self.send(TYPE_SETPOINT, pack_setpoint((wr, wl, br, bl, cv)))
