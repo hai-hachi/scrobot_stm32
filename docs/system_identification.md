@@ -1,147 +1,95 @@
-# System identification workflow
+# System identification
 
-The firmware already contains a temporary open-loop mode intended for identifying the motor dynamics before final PID tuning.
+System identification uses UART protocol v2 and the dedicated one-motor SYSID mode.
 
-## Preconditions
-
-Before collecting identification data:
-
-1. Verify the E-stop input and polarity.
-2. Secure the robot or lift the driven wheel off the ground for initial tests.
-3. Verify motor direction.
-4. Verify encoder direction.
-5. Measure and correct the actual encoder counts per output-shaft revolution.
-6. Verify that reported RPM is physically correct.
-7. Confirm F0 and communication-loss behavior stop the motor.
-
-Do not use the current CPR constants as final values until they have been measured. The source currently marks them as placeholders.
-
-## Relevant firmware timing
-
-- control period: 10 ms
-- control frequency: 100 Hz
-- F1/F3 commands are applied at TIM10 boundaries
-- F2 is associated with the command using a uint16 sequence number
-
-## F1 open-loop command
-
-F1 applies normalized duty directly:
+## Architecture
 
 ```text
--1.0 <= duty <= 1.0
+Laptop (SSH / MATLAB)
+        |
+        v
+Raspberry Pi
+  Python SYSID tool
+        |
+   UART 1 Mbaud
+        |
+        v
+STM32F411
+  100 Hz control/sample timing
 ```
 
-For initial tests, command only one motor while setting all other motor duties to zero.
+Run the Python acquisition on the Pi. Wi-Fi timing then does not affect the motor command/sample loop.
 
-Example conceptual command:
+## Encoder constants
 
-```text
-SEQ = 25
-WR = 0.15
-WL = 0
-BR = 0
-BL = 0
-CV = 0
+The firmware assumes x4 quadrature decoding:
+
+- WR/WL: 17 PPR x 51 x 4 = 3468 counts/output revolution
+- BR/BL: 11 PPR x 9.6 x 4 = 422.4 counts/output revolution
+- CV: 11 PPR x 10 x 4 = 440 counts/output revolution
+
+Verify these values by physically rotating each output shaft before final identification.
+
+## Safety sequence
+
+1. Jack up / mechanically secure the robot.
+2. Verify E-stop.
+3. Run `encoder_test.py`.
+4. Verify positive duty direction and encoder sign at low duty.
+5. Run deadband sweep.
+6. Run open-loop step tests.
+7. Fit the motor model in MATLAB.
+8. Tune PID.
+9. Validate closed-loop speed response.
+
+The STM32 boots DISARMED. SYSID requires ARM. A lost SYSID heartbeat for 500 ms stops the experiment and disarms the controller.
+
+## Python tools
+
+From `tools/`:
+
+```bash
+python motor_test.py --port /dev/ttyAMA0 --motor WR --duty 0.10
 ```
 
-The following F2 response with the same sequence number contains the synchronized measured RPM.
+Step test:
 
-## Recommended identification sequence
-
-### 1. Encoder calibration
-
-Rotate one output shaft through a known number of revolutions and determine the actual timer-count change.
-
-Calculate:
-
-```text
-CPR = absolute encoder count change / mechanical revolutions
+```bash
+python sysid.py --port /dev/ttyAMA0 step --motor WR --duty 0.25 --pre 2 --duration 5 --post 2
 ```
 
-Repeat in both directions.
+Sweep:
 
-### 2. Direction check
-
-Apply a small positive duty and verify:
-
-- mechanical positive direction
-- encoder RPM sign
-- configured `APP_MOTOR_SIGN_*`
-- configured `APP_ENCODER_SIGN_*`
-
-### 3. Deadband sweep
-
-Increase duty slowly from zero in both directions.
-
-Record:
-
-- command duty
-- measured RPM
-- first duty where repeatable motion begins
-
-This gives the positive and negative deadband.
-
-### 4. Static duty-speed map
-
-After the deadband is known, test several steady duty values.
-
-For each value:
-
-1. hold duty long enough to approach steady state
-2. record measured RPM
-3. repeat in both directions
-
-This checks approximate linearity and asymmetry.
-
-### 5. Dynamic step tests
-
-Apply several safe duty steps and log the synchronized F2 data.
-
-Typical first-order model:
-
-```text
-G(s) = K / (tau*s + 1)
+```bash
+python sysid.py --port /dev/ttyAMA0 sweep --motor WR --start 0 --stop 0.5 --step 0.025 --hold 1.5
 ```
 
-Possible identified quantities:
-
-- deadband
-- static gain K
-- time constant tau
-- transport delay, if significant
-- positive/negative asymmetry
-
-### 6. Closed-loop validation
-
-After choosing initial PID gains, use F3 to send RPM references and use F2 to evaluate:
-
-- rise time
-- settling time
-- overshoot
-- steady-state error
-- saturation behavior
-
-## Data to log on the Pi
-
-At minimum:
+CSV columns:
 
 ```text
-timestamp
-sequence
+host_time_s
+control_tick
+frame_seq
+command_seq
 motor
-command_mode
-command
-measured_rpm
+command_duty
+rpm
+encoder_count
+status
 ```
 
-Useful additional fields:
+Use duty cycle as the identification input. The initial project assumption is a nominal 12 V motor supply.
 
-```text
-battery_voltage
-estop_state
-communication_state
+## MATLAB
+
+A CSV can be loaded directly:
+
+```matlab
+T = readtable("WR_step_p0.250_YYYYMMDD_HHMMSS.csv");
+
+u = T.command_duty;
+y = T.rpm;
+t = T.control_tick * 0.01;
 ```
 
-## Safety recommendation
-
-Start with low command levels and one wheel at a time. Do not begin with full-duty steps on the assembled mobile robot.
+The 100 Hz STM32 control tick should be preferred as the identification timebase.

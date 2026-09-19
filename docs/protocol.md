@@ -1,145 +1,173 @@
-# UART protocol
+# UART protocol v2
 
-The low-level controller communicates with the high-level computer over USART6.
+The Raspberry Pi and STM32 communicate over USART6 at 1,000,000 baud, 8-N-1.
 
-## Link configuration
-
-- Baud rate: 1,000,000 bit/s
-- Data: 8 bits
-- Parity: none
-- Stop bits: 1
-- Hardware flow control: none
-- Byte order for multibyte values: little-endian
-- Float format: IEEE-754 binary32
-
-## Frame format
+## Frame
 
 ```text
-SOF1 | SOF2 | TYPE | PAYLOAD | CRC8
- AA     55
+AA 55 | VER | TYPE | SEQ (u16 LE) | LEN | PAYLOAD | CRC16 (u16 LE)
 ```
 
-CRC-8 parameters:
+CRC is CRC-16/CCITT-FALSE:
 
-- polynomial: `0x07`
-- init: `0x00`
-- refin: false
-- refout: false
-- xorout: `0x00`
-- CRC coverage: `TYPE + PAYLOAD`
-- `SOF1` and `SOF2` are not included in the CRC
+- polynomial: `0x1021`
+- initial value: `0xFFFF`
+- refin/refout: false
+- xorout: `0x0000`
+- CRC covers `VER` through the final payload byte
+- SOF and CRC bytes are excluded
 
-## Normal operation
+Protocol version is currently `2`.
 
-### Pi -> STM32
+## Motor IDs
 
-| Type | Payload | Total frame |
-| --- | --- | ---: |
-| `A0` | WR_ref, WL_ref | 12 bytes |
-| `A1` | BR_ref, BL_ref, CV_ref | 16 bytes |
+| ID | Motor |
+|---:|---|
+| 0 | WR |
+| 1 | WL |
+| 2 | BR |
+| 3 | BL |
+| 4 | CV |
 
-### STM32 -> Pi
+## Pi -> STM32
 
-Sent on the 100 Hz TIM10 control tick in normal mode.
+| Type | Name | Payload |
+|---:|---|---|
+| 0x10 | SETPOINT | 5 x float RPM: WR, WL, BR, BL, CV |
+| 0x11 | ARM | none |
+| 0x12 | DISARM | none |
+| 0x30 | SYSID_COMMAND | motor_id u8 + duty float |
+| 0x32 | SYSID_STOP | none |
+| 0x40 | PID_SET | motor_id u8 + Kp, Ki, Kd, Tf |
+| 0x41 | PID_GET | motor_id u8 |
+| 0x50 | INFO_REQUEST | none |
 
-| Type | Meaning | Payload | Total frame |
-| --- | --- | --- | ---: |
-| `01` | Normal | WR, WL, BR, BL, CV measured RPM | 24 bytes |
-| `00` | E-stop active | WR, WL, BR, BL, CV measured RPM | 24 bytes |
+## STM32 -> Pi
 
-Normal telemetry is suppressed while temporary F1/F3 tuning mode is active.
+| Type | Name | Behavior |
+|---:|---|---|
+| 0x20 | FEEDBACK | 100 Hz |
+| 0x21 | DIAGNOSTICS | returned with info request |
+| 0x31 | SYSID_SAMPLE | 100 Hz while SYSID is active |
+| 0x42 | PID_RESPONSE | response to PID_SET/PID_GET |
+| 0x51 | INFO_RESPONSE | firmware/protocol version |
+| 0x7F | ERROR | request type + error code |
 
-## PID parameter update
+## ARM/DISARM behavior
 
-### Pi -> STM32
+The STM32 always boots DISARMED.
 
-| Type | Motor | Payload |
-| --- | --- | --- |
-| `BA` | WR | Kp, Ki, Kd, Tf |
-| `BB` | WL | Kp, Ki, Kd, Tf |
-| `B0` | BR | Kp, Ki, Kd, Tf |
-| `B1` | BL | Kp, Ki, Kd, Tf |
-| `B2` | CV | Kp, Ki, Kd, Tf |
+E-stop press immediately disables outputs and clears the armed state. Releasing E-stop does not automatically re-enable the drivers. A fresh ARM command is required.
 
-Each frame is 20 bytes total.
+If the normal setpoint heartbeat expires, the STM32 disarms. If the SYSID command heartbeat expires, SYSID stops and the STM32 disarms.
 
-### STM32 -> Pi echo
+## SETPOINT
 
-| Type | Motor |
-| --- | --- |
-| `CA` | WR |
-| `CB` | WL |
-| `C0` | BR |
-| `C1` | BL |
-| `C2` | CV |
+Payload, little-endian:
 
-The echo payload contains Kp, Ki, Kd, Tf.
+```text
+float WR_rpm
+float WL_rpm
+float BR_rpm
+float BL_rpm
+float CV_rpm
+```
 
-## Temporary tuning protocol
+Limits:
 
-### F1 - open-loop system identification
+- WR/WL: ±200 RPM
+- BR/BL: ±400 RPM
+- CV: ±600 RPM
+
+## FEEDBACK
 
 Payload:
 
 ```text
-SEQ(uint16) + WR_duty + WL_duty + BR_duty + BL_duty + CV_duty
+u32 control_tick
+u32 status
+u16 last_setpoint_seq
+i32 WR_count
+i32 WL_count
+i32 BR_count
+i32 BL_count
+i32 CV_count
+f32 WR_rpm
+f32 WL_rpm
+f32 BR_rpm
+f32 BL_rpm
+f32 CV_rpm
 ```
 
-Each duty is a float normalized to:
+Total payload: 50 bytes.
 
-```text
--1.0 ... +1.0
-```
+## Status bits
 
-Receiving F1 enters open-loop SYSID mode.
+| Bit | Meaning |
+|---:|---|
+| 0 | ARMED |
+| 1 | ESTOP |
+| 2 | COMM_TIMEOUT |
+| 3 | SYSID |
+| 4 | UART_ERROR seen |
+| 5 | INVALID_OUTPUT seen |
+| 6 | TX queue drop seen |
+| 7 | INVALID_COMMAND seen |
 
-Total frame length: 26 bytes.
-
-### F2 - synchronized measurement
+## SYSID_COMMAND
 
 Payload:
 
 ```text
-SEQ(uint16) + WR_rpm + WL_rpm + BR_rpm + BL_rpm + CV_rpm
+u8 motor_id
+f32 duty
 ```
 
-The STM32 returns F2 one control interval after the corresponding F1/F3 command is applied at a TIM10 boundary.
+Duty range is -1.0 to +1.0. Only one motor is driven in SYSID mode.
 
-This sequence association is intended to provide deterministic command/measurement pairing for system identification and controller testing.
+The host must refresh the command faster than the 500 ms tuning timeout.
 
-Total frame length: 26 bytes.
-
-### F3 - closed-loop PID test
+## SYSID_SAMPLE
 
 Payload:
 
 ```text
-SEQ(uint16) + WR_ref + WL_ref + BR_ref + BL_ref + CV_ref
+u16 command_seq
+u32 control_tick
+u8 motor_id
+f32 commanded_duty
+f32 measured_rpm
+i32 encoder_count
+u32 status
 ```
 
-Values are RPM references.
+The packet is emitted at the 100 Hz control rate while SYSID is active.
 
-Receiving F3 enters closed-loop PID-test mode.
+## DIAGNOSTICS
 
-Total frame length: 26 bytes.
+Payload:
 
-### F0 - stop tuning
+```text
+u32 uptime_ms
+u32 reset_flags_raw
+u32 rx_frames_ok
+u32 crc_errors
+u32 invalid_frames
+u32 uart_errors
+u32 tx_queue_drops
+u8 fw_major
+u8 fw_minor
+u8 fw_patch
+u8 protocol_version
+```
 
-F0 has no payload.
+## Error codes
 
-Behavior:
-
-- stop all motors
-- reset PID state
-- return to normal mode
-
-Total frame length: 4 bytes.
-
-## Timeouts
-
-Current application configuration:
-
-- normal drive command heartbeat timeout: 200 ms
-- tuning watchdog timeout: 20 s
-
-These values are defined in `Core/Inc/app_config.h`.
+| Code | Meaning |
+|---:|---|
+| 1 | bad protocol version |
+| 2 | bad payload length |
+| 3 | bad value / unsupported command |
+| 4 | command requires ARMED state |
+| 5 | E-stop active |
+| 6 | invalid motor ID |
