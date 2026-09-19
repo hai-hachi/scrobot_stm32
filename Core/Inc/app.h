@@ -28,8 +28,11 @@ enum
 typedef struct
 {
     volatile uint32_t control_tick;
+    volatile uint32_t main_loop_count;
     volatile uint32_t status_flags;
     volatile uint32_t reset_flags_raw;
+    volatile uint32_t watchdog_started;
+    volatile uint32_t watchdog_update_timeout;
     volatile uint16_t last_setpoint_seq;
     volatile uint16_t sysid_command_seq;
     volatile uint8_t sysid_motor_id;
