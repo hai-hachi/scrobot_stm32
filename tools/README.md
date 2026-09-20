@@ -90,3 +90,35 @@ python sysid.py --port /dev/ttyAMA0 bidir-sweep --motor WR --max 0.30 --step 0.0
 ```
 
 Use this mode to capture forward/reverse deadband and hysteresis in a single CSV.
+
+
+## PIDF auto-tune and runtime update
+
+MATLAB source:
+
+```text
+tools/matlab/pidf_autotune_all.m
+```
+
+Open it in MATLAB Live Editor (or copy it into a new Live Script and save as
+`.mlx`). It uses the latest `*_multistep_*.csv` for each motor, estimates
+1P0Z / 1P1Z / 2P0Z / 2P1Z, selects the best validation fit, runs
+`pidtune(..., 'PIDF')`, and saves:
+
+```text
+pidf_autotune_results.csv
+```
+
+The CSV contains both MATLAB gains in percent-duty units and gains scaled for
+the STM32 PWM range (ARR=4999).
+
+Runtime PIDF updater:
+
+```bash
+python pid_update.py --port /dev/ttyAMA0 get-all
+python pid_update.py --port /dev/ttyAMA0 set --motor WR --kp 10 --ki 20 --kd 0.1 --tf 0.01
+python pid_update.py --port /dev/ttyAMA0 load-csv --file pidf_autotune_results.csv
+```
+
+UART PIDF updates are volatile and return to the values in `app_config.h`
+after an STM32 reset or power cycle.
