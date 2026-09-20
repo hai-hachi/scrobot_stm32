@@ -169,8 +169,16 @@ for m = 1:numel(motors)
     fprintf("Kd = %.9g\n",Kd_STM32);
     fprintf("Tf = %.9g s\n",Tf_STM32);
 
-    if any([Kp_STM32 Ki_STM32 Kd_STM32 Tf_STM32] < 0)
-        warning("%s produced a negative PIDF parameter. Do not send it to the firmware until the model/sign is checked.",motor);
+    if Kp_STM32 < 0 || Ki_STM32 < 0 || Tf_STM32 < 0
+        warning("%s produced invalid Kp/Ki/Tf signs. Do not send these gains.",motor);
+    end
+
+    if Kd_STM32 < 0
+        warning("%s PIDF has negative Kd (%.6g). This is allowed, but verify the closed-loop response before hardware testing.",motor,Kd_STM32);
+    end
+
+    if ~isstable(feedback(C_percent*bestPlant,1))
+        warning("%s tuned closed loop is unstable. Do not send these gains to hardware.",motor);
     end
 
     %% Export to base workspace
