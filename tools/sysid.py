@@ -145,15 +145,27 @@ def main():
         help="Bidirectional multistep input for transfer-function identification",
     )
     multistep.add_argument("--motor", choices=MOTOR_IDS, required=True)
+    multistep.add_argument(
+        "--start",
+        type=float,
+        default=0.25,
+        help="Lowest positive duty magnitude used for the multistep test.",
+    )
+    multistep.add_argument(
+        "--size",
+        type=float,
+        default=0.10,
+        help="Duty increment used to generate levels up to --max.",
+    )
+    multistep.add_argument(
+        "--max",
+        dest="max_duty",
+        type=float,
+        default=0.80,
+        help="Maximum duty magnitude. Default 0.80 to stay below saturation.",
+    )
     multistep.add_argument("--hold", type=float, default=1.5)
     multistep.add_argument("--settle-zero", type=float, default=2.0)
-    multistep.add_argument(
-        "--levels",
-        type=float,
-        nargs="+",
-        default=[0.40, 0.70, 0.30, 0.60, 0.80, 0.50, 0.25],
-        help="Positive duty levels. Reverse levels are generated automatically.",
-    )
     multistep.add_argument("--output", type=Path)
 
     args = ap.parse_args()
@@ -188,16 +200,45 @@ def main():
             output = args.output or default_output(args.motor, "bidir_sweep")
 
         else:
-            if any(level <= 0.0 or level > 1.0 for level in args.levels):
-                raise SystemExit("all multistep levels must be > 0 and <= 1")
+            if not (0.0 < args.start < args.max_duty <= 1.0):
+                raise SystemExit("require 0 < --start < --max <= 1")
+            if args.size <= 0.0:
+                raise SystemExit("--size must be > 0")
+            if args.hold <= 0.0:
+                raise SystemExit("--hold must be > 0")
 
-            # Bidirectional multistep sequence:
-            # 0 -> shuffled positive levels -> 0 -> matching negative levels -> 0
+            # Generate monotonically spaced levels from start to max.
+            levels = make_sweep(args.start, args.max_duty, args.size)
+            if levels[-1] < args.max_duty - 1e-9:
+                levels.append(args.max_duty)
+
+            # Reorder the generated levels so the plant is excited by
+            # both upward and downward changes instead of a simple ramp.
+            ordered = []
+            lo = 0
+            hi = len(levels) - 1
+            take_high = True
+            while lo <= hi:
+                if take_high:
+                    ordered.append(levels[hi])
+                    hi -= 1
+                else:
+                    ordered.append(levels[lo])
+                    lo += 1
+                take_high = not take_high
+
+            # Bidirectional multistep:
+            # 0 -> positive multisteps -> 0 -> negative multisteps -> 0
             segments = [(0.0, args.settle_zero)]
-            segments.extend((level, args.hold) for level in args.levels)
+            segments.extend((level, args.hold) for level in ordered)
             segments.append((0.0, args.settle_zero))
-            segments.extend((-level, args.hold) for level in args.levels)
+            segments.extend((-level, args.hold) for level in ordered)
             segments.append((0.0, args.settle_zero))
+
+            print(
+                "Multistep levels:",
+                " ".join(f"{100.0 * level:.1f}%" for level in ordered),
+            )
 
             output = args.output or default_output(args.motor, "multistep")
 
