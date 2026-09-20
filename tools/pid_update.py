@@ -61,9 +61,8 @@ def get_pid(client, motor: str):
 
 
 def set_pid(client, motor: str, kp: float, ki: float, kd: float, tf: float):
-    values = (kp, ki, kd, tf)
-    if any(value < 0.0 for value in values):
-        raise ValueError("Kp, Ki, Kd and Tf must be >= 0")
+    if kp < 0.0 or ki < 0.0 or tf < 0.0:
+        raise ValueError("Kp, Ki and Tf must be >= 0; Kd may be signed")
 
     motor_id = MOTOR_IDS[motor]
 
