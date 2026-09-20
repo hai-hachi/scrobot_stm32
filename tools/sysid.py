@@ -140,6 +140,22 @@ def main():
     bidir.add_argument("--settle-zero", type=float, default=1.0)
     bidir.add_argument("--output", type=Path)
 
+    multistep = sub.add_parser(
+        "multistep",
+        help="Bidirectional multistep input for transfer-function identification",
+    )
+    multistep.add_argument("--motor", choices=MOTOR_IDS, required=True)
+    multistep.add_argument("--hold", type=float, default=1.5)
+    multistep.add_argument("--settle-zero", type=float, default=2.0)
+    multistep.add_argument(
+        "--levels",
+        type=float,
+        nargs="+",
+        default=[0.40, 0.70, 0.30, 0.60, 0.80, 0.50, 0.25],
+        help="Positive duty levels. Reverse levels are generated automatically.",
+    )
+    multistep.add_argument("--output", type=Path)
+
     args = ap.parse_args()
     c = SerialClient(args.port, args.baud)
 
@@ -164,12 +180,26 @@ def main():
             segments.append((0.0, args.settle_zero))
             output = args.output or default_output(args.motor, "sweep")
 
-        else:
+        elif args.mode == "bidir-sweep":
             values = make_bidirectional_sweep(args.max_duty, args.step)
             segments = [(0.0, args.settle_zero)]
             segments.extend((value, args.hold) for value in values[1:])
             segments.append((0.0, args.settle_zero))
             output = args.output or default_output(args.motor, "bidir_sweep")
+
+        else:
+            if any(level <= 0.0 or level > 1.0 for level in args.levels):
+                raise SystemExit("all multistep levels must be > 0 and <= 1")
+
+            # Bidirectional multistep sequence:
+            # 0 -> shuffled positive levels -> 0 -> matching negative levels -> 0
+            segments = [(0.0, args.settle_zero)]
+            segments.extend((level, args.hold) for level in args.levels)
+            segments.append((0.0, args.settle_zero))
+            segments.extend((-level, args.hold) for level in args.levels)
+            segments.append((0.0, args.settle_zero))
+
+            output = args.output or default_output(args.motor, "multistep")
 
         run_segments(c, motor_id, segments, output)
     finally:
