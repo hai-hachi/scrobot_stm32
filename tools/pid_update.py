@@ -23,6 +23,7 @@ app_config.h defaults after an STM32 reset/power cycle.
 
 import argparse
 import csv
+import math
 from pathlib import Path
 import time
 
@@ -61,13 +62,45 @@ def get_pid(client, motor: str):
 
 
 def set_pid(client, motor: str, kp: float, ki: float, kd: float, tf: float):
+    values = {"Kp": kp, "Ki": ki, "Kd": kd, "Tf": tf}
+
+    if any(not math.isfinite(v) for v in values.values()):
+        raise ValueError(f"{motor}: PIDF contains NaN/Inf: {values}")
+
     if kp < 0.0 or ki < 0.0 or tf < 0.0:
-        raise ValueError("Kp, Ki and Tf must be >= 0; Kd may be signed")
+        raise ValueError(
+            f"{motor}: Kp, Ki and Tf must be >= 0; Kd may be signed: {values}"
+        )
+
+    if kp > 100000.0 or ki > 100000.0 or abs(kd) > 100000.0:
+        raise ValueError(
+            f"{motor}: gain exceeds STM32 APP_PID_GAIN_MAX=100000: {values}"
+        )
+
+    if tf > 10.0:
+        raise ValueError(
+            f"{motor}: Tf exceeds STM32 APP_PID_TF_MAX_S=10: {values}"
+        )
 
     motor_id = MOTOR_IDS[motor]
 
+    print(
+        f"Sending {motor}: "
+        f"Kp={kp:.9g}, Ki={ki:.9g}, Kd={kd:.9g}, Tf={tf:.9g} s"
+    )
+
     client.pid_set(motor_id, kp, ki, kd, tf)
-    response = wait_pid_response(client, motor_id)
+
+    try:
+        response = wait_pid_response(client, motor_id)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{exc}\n"
+            f"Rejected values: Kp={kp:.9g}, Ki={ki:.9g}, "
+            f"Kd={kd:.9g}, Tf={tf:.9g}. "
+            "If these pass the host-side limits, verify the STM32 was rebuilt "
+            "and flashed with the signed-Kd firmware."
+        ) from exc
 
     # Read back once more to verify what the STM32 actually holds.
     client.pid_get(motor_id)
