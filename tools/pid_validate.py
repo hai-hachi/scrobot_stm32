@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Closed-loop PIDF validation using the PIDF gains already loaded in STM32.
+
+The test does NOT change PIDF gains.
+
+Example:
+    python pid_validate.py --port /dev/ttyAMA0 --motor WR --rpm 120
+
+Sequence:
+    0 RPM -> target RPM -> 0 RPM
+
+A 100 Hz feedback log is saved to tools/data/.
+"""
+
+import argparse
+import csv
+from datetime import datetime
+from pathlib import Path
+import time
+
+from scrobot_protocol import (
+    SerialClient,
+    MOTOR_IDS,
+    TYPE_FEEDBACK,
+    TYPE_PID_RESPONSE,
+    TYPE_ERROR,
+    decode_feedback,
+    decode_pid_response,
+    decode_error,
+)
+
+
+RPM_LIMITS = {
+    "WR": 200.0,
+    "WL": 200.0,
+    "BR": 400.0,
+    "BL": 400.0,
+    "CV": 600.0,
+}
+
+
+def default_output(motor: str, rpm: float) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rpm_tag = f"{rpm:+.1f}".replace("+", "p").replace("-", "m").replace(".", "_")
+    return Path("data") / f"{motor}_pid_validation_{rpm_tag}rpm_{stamp}.csv"
+
+
+def command_for_motor(motor: str, rpm: float) -> dict[str, float]:
+    values = {"wr": 0.0, "wl": 0.0, "br": 0.0, "bl": 0.0, "cv": 0.0}
+    values[motor.lower()] = rpm
+    return values
+
+
+def get_current_pid(client: SerialClient, motor: str, timeout: float = 0.75) -> dict:
+    motor_id = MOTOR_IDS[motor]
+
+    client.drain(0.05)
+    client.pid_get(motor_id)
+
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        for frame in client.read_frames(0.05):
+            if frame.msg_type == TYPE_ERROR:
+                raise RuntimeError(f"STM32 ERROR: {decode_error(frame.payload)}")
+
+            if frame.msg_type != TYPE_PID_RESPONSE:
+                continue
+
+            pid = decode_pid_response(frame.payload)
+            if pid["motor_id"] == motor_id:
+                return pid
+
+    raise TimeoutError(f"Timed out reading PIDF parameters for {motor}")
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Validate the currently loaded STM32 PIDF controller with an RPM step"
+    )
+    ap.add_argument("--port", required=True)
+    ap.add_argument("--motor", choices=MOTOR_IDS, required=True)
+    ap.add_argument("--rpm", type=float, required=True)
+    ap.add_argument("--pre", type=float, default=2.0)
+    ap.add_argument("--duration", type=float, default=5.0)
+    ap.add_argument("--post", type=float, default=2.0)
+    ap.add_argument("--baud", type=int, default=1_000_000)
+    ap.add_argument("--output", type=Path)
+
+    args = ap.parse_args()
+
+    if args.pre < 0.0 or args.duration <= 0.0 or args.post < 0.0:
+        raise SystemExit("--pre/--post must be >= 0 and --duration must be > 0")
+
+    limit = RPM_LIMITS[args.motor]
+    if abs(args.rpm) > limit:
+        raise SystemExit(
+            f"{args.motor} reference must be within +/-{limit:.0f} RPM"
+        )
+
+    output = args.output or default_output(args.motor, args.rpm)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    client = SerialClient(args.port, args.baud)
+
+    try:
+        # Read and record the controller that is actually in the STM32.
+        pid = get_current_pid(client, args.motor)
+
+        print(
+            f'{args.motor} current PIDF: '
+            f'Kp={pid["kp"]:.9g}, '
+            f'Ki={pid["ki"]:.9g}, '
+            f'Kd={pid["kd"]:.9g}, '
+            f'Tf={pid["tf"]:.9g} s'
+        )
+
+        fields = [
+            "host_time_s",
+            "control_tick",
+            "frame_seq",
+            "last_setpoint_seq",
+            "motor",
+            "reference_rpm",
+            "measured_rpm",
+            "encoder_count",
+            "status",
+            "kp",
+            "ki",
+            "kd",
+            "tf_s",
+        ]
+
+        client.disarm()
+        time.sleep(0.05)
+        client.drain(0.05)
+        client.arm()
+
+        t0 = time.monotonic()
+
+        with output.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+
+            def run_segment(reference: float, duration: float):
+                command = command_for_motor(args.motor, reference)
+                start = time.monotonic()
+                next_command = start
+
+                while time.monotonic() - start < duration:
+                    now = time.monotonic()
+
+                    # Firmware command timeout is 200 ms; refresh at 20 Hz.
+                    if now >= next_command:
+                        client.setpoint(**command)
+                        next_command += 0.05
+
+                    for frame in client.read_frames(0.01):
+                        if frame.msg_type == TYPE_ERROR:
+                            raise RuntimeError(
+                                f"STM32 ERROR: {decode_error(frame.payload)}"
+                            )
+
+                        if frame.msg_type != TYPE_FEEDBACK:
+                            continue
+
+                        fb = decode_feedback(frame.payload)
+
+                        writer.writerow({
+                            "host_time_s": time.monotonic() - t0,
+                            "control_tick": fb["control_tick"],
+                            "frame_seq": frame.seq,
+                            "last_setpoint_seq": fb["last_setpoint_seq"],
+                            "motor": args.motor,
+                            "reference_rpm": reference,
+                            "measured_rpm": fb["rpm"][args.motor],
+                            "encoder_count": fb["counts"][args.motor],
+                            "status": fb["status"],
+                            "kp": pid["kp"],
+                            "ki": pid["ki"],
+                            "kd": pid["kd"],
+                            "tf_s": pid["tf"],
+                        })
+
+            try:
+                print(
+                    f"Running {args.motor}: "
+                    f"0 -> {args.rpm:.1f} RPM -> 0 "
+                    f"({args.pre:.1f}s / {args.duration:.1f}s / {args.post:.1f}s)"
+                )
+
+                run_segment(0.0, args.pre)
+                run_segment(args.rpm, args.duration)
+                run_segment(0.0, args.post)
+
+            finally:
+                # Safe shutdown even if logging fails.
+                try:
+                    client.setpoint()
+                    time.sleep(0.05)
+                finally:
+                    client.disarm()
+                    time.sleep(0.05)
+
+        print(f"Saved {output}")
+
+    finally:
+        client.close()
+
+
+if __name__ == "__main__":
+    main()
