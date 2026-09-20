@@ -170,6 +170,10 @@ def main():
                 print_pid(get_pid(client, motor))
 
         elif args.command == "set":
+            client.disarm()
+            time.sleep(0.05)
+            client.drain(0.05)
+
             print(f"Writing {args.motor}...")
             _, verified = set_pid(
                 client,
@@ -183,6 +187,10 @@ def main():
             print_pid(verified)
 
         else:
+            client.disarm()
+            time.sleep(0.05)
+            client.drain(0.05)
+
             load_csv(client, args.file)
 
     finally:
