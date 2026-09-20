@@ -1277,9 +1277,9 @@ static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
                 const float Tf = ReadFloatLE(&payload[13]);
 
                 if (!isfinite(Kp) || !isfinite(Ki) || !isfinite(Kd) || !isfinite(Tf) ||
-                    Kp < 0.0f || Ki < 0.0f || Kd < 0.0f || Tf < 0.0f ||
+                    Kp < 0.0f || Ki < 0.0f || Tf < 0.0f ||
                     Kp > APP_PID_GAIN_MAX || Ki > APP_PID_GAIN_MAX ||
-                    Kd > APP_PID_GAIN_MAX || Tf > APP_PID_TF_MAX_S) {
+                    fabsf(Kd) > APP_PID_GAIN_MAX || Tf > APP_PID_TF_MAX_S) {
                     UART_QueueError(seq, type, ERROR_BAD_VALUE);
                     return;
                 }
