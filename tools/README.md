@@ -73,3 +73,20 @@ python pid_test.py --port /dev/ttyAMA0 --motor WR --rpm 100 --kp 1.0 --ki 2.0 --
 ```
 
 The script writes PID gains, arms the controller, sends a 50 Hz unified setpoint heartbeat, logs 100 Hz feedback, then commands zero and disarms.
+
+
+## Bidirectional deadband / hysteresis sweep
+
+This performs:
+
+```text
+0 -> +max -> 0 -> -max -> 0
+```
+
+Example:
+
+```bash
+python sysid.py --port /dev/ttyAMA0 bidir-sweep --motor WR --max 0.30 --step 0.01 --hold 1.0
+```
+
+Use this mode to capture forward/reverse deadband and hysteresis in a single CSV.
