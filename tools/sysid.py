@@ -87,6 +87,25 @@ def make_sweep(start, stop, step):
     return values
 
 
+def make_bidirectional_sweep(max_duty, step):
+    if max_duty <= 0.0 or max_duty > 1.0:
+        raise ValueError("max duty must be > 0 and <= 1")
+    if step <= 0.0:
+        raise ValueError("step must be > 0")
+
+    pos = make_sweep(0.0, max_duty, step)
+    neg = make_sweep(0.0, -max_duty, -step)
+
+    # 0 -> +max -> 0 -> -max -> 0
+    # Duplicate turning points are removed so each level is held once.
+    return (
+        pos
+        + pos[-2::-1]
+        + neg[1:]
+        + neg[-2::-1]
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description="SCROBOT open-loop motor system identification")
     ap.add_argument("--port", required=True)
@@ -110,6 +129,17 @@ def main():
     sweep.add_argument("--settle-zero", type=float, default=1.0)
     sweep.add_argument("--output", type=Path)
 
+    bidir = sub.add_parser(
+        "bidir-sweep",
+        help="0 -> +max -> 0 -> -max -> 0 sweep for deadband/hysteresis",
+    )
+    bidir.add_argument("--motor", choices=MOTOR_IDS, required=True)
+    bidir.add_argument("--max", dest="max_duty", type=float, default=0.30)
+    bidir.add_argument("--step", type=float, default=0.01)
+    bidir.add_argument("--hold", type=float, default=1.0)
+    bidir.add_argument("--settle-zero", type=float, default=1.0)
+    bidir.add_argument("--output", type=Path)
+
     args = ap.parse_args()
     c = SerialClient(args.port, args.baud)
 
@@ -120,16 +150,26 @@ def main():
             if not -1.0 <= args.duty <= 1.0:
                 raise SystemExit("duty must be between -1 and +1")
             segments = [(0.0, args.pre), (args.duty, args.duration), (0.0, args.post)]
-            output = args.output or default_output(args.motor, f"step_{args.duty:+.3f}".replace("+", "p").replace("-", "m"))
-        else:
+            output = args.output or default_output(
+                args.motor,
+                f"step_{args.duty:+.3f}".replace("+", "p").replace("-", "m"),
+            )
+
+        elif args.mode == "sweep":
             values = make_sweep(args.start, args.stop, args.step)
             if any(not -1.0 <= value <= 1.0 for value in values):
                 raise SystemExit("all sweep duty values must be between -1 and +1")
             segments = [(0.0, args.settle_zero)]
-            for value in values:
-                segments.append((value, args.hold))
+            segments.extend((value, args.hold) for value in values)
             segments.append((0.0, args.settle_zero))
             output = args.output or default_output(args.motor, "sweep")
+
+        else:
+            values = make_bidirectional_sweep(args.max_duty, args.step)
+            segments = [(0.0, args.settle_zero)]
+            segments.extend((value, args.hold) for value in values[1:])
+            segments.append((0.0, args.settle_zero))
+            output = args.output or default_output(args.motor, "bidir_sweep")
 
         run_segments(c, motor_id, segments, output)
     finally:
