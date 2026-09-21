@@ -28,6 +28,20 @@
  */
 #define APP_MT_ZERO_TIMEOUT_MS            250U
 
+/*
+ * Auxiliary encoder input filtering.
+ *
+ * BR/BL use STM32 timer encoder mode. Filter 15 is the strongest timer
+ * digital input filter and rejects short glitches while remaining far faster
+ * than the expected encoder edge spacing.
+ *
+ * CV is decoded in software from EXTI edges. Ignore valid-looking quadrature
+ * transitions that occur less than 25 us after the previous accepted edge.
+ * This does not depend on the exact CV PPR/gear ratio and can be tuned later.
+ */
+#define APP_AUX_ENCODER_TIM_FILTER         15U
+#define APP_CV_MIN_EDGE_US                 25U
+
 /* USART6 protocol target baud rate. */
 #define APP_UART_BAUD                     1000000U
 
