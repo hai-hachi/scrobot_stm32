@@ -4,7 +4,7 @@
 /* ---------------- Firmware / protocol ---------------- */
 #define APP_FW_VERSION_MAJOR              0U
 #define APP_FW_VERSION_MINOR              2U
-#define APP_FW_VERSION_PATCH              0U
+#define APP_FW_VERSION_PATCH              1U
 #define APP_PROTOCOL_VERSION              2U
 
 /* ---------------- Control loop ---------------- */
@@ -41,6 +41,22 @@
  */
 #define APP_AUX_ENCODER_TIM_FILTER         15U
 #define APP_CV_MIN_EDGE_US                 25U
+
+/*
+ * Auxiliary speed estimator for BR/BL/CV.
+ *
+ * At normal speed, use encoder count change over a 20 ms window. This is much
+ * less sensitive to individual edge timing jitter than the M/T estimate.
+ * When fewer than 4 counts are observed in the window, fall back to the M/T
+ * estimate so very-low-speed resolution is retained.
+ *
+ * The selected raw estimate is then low-pass filtered before it is used by
+ * PIDF and sent in normal feedback/SYSID packets.
+ */
+#define APP_AUX_RPM_WINDOW_TICKS           2U          /* 2 x 10 ms = 20 ms */
+#define APP_AUX_RPM_WINDOW_MIN_COUNTS      4U
+#define APP_BRBL_RPM_LPF_HZ               10.0f
+#define APP_CV_RPM_LPF_HZ                  7.0f
 
 /* USART6 protocol target baud rate. */
 #define APP_UART_BAUD                     1000000U
