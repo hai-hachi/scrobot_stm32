@@ -48,21 +48,21 @@
 #define APP_CPR_WL                        3468.0f
 #define APP_CPR_BR                        422.4f
 #define APP_CPR_BL                        422.4f
-#define APP_CPR_CV                        440.0f
+#define APP_CPR_CV                        3960.0f
 
 /* Maximum accepted closed-loop speed references. */
 #define APP_MAX_RPM_WR                    200.0f
 #define APP_MAX_RPM_WL                    200.0f
 #define APP_MAX_RPM_BR                    400.0f
 #define APP_MAX_RPM_BL                    400.0f
-#define APP_MAX_RPM_CV                    600.0f
+#define APP_MAX_RPM_CV                    150.0f
 
 /* Flip to -1.0f if measured RPM sign is opposite to the chosen positive direction. */
 #define APP_ENCODER_SIGN_WR              -1.0f
 #define APP_ENCODER_SIGN_WL               1.0f
 #define APP_ENCODER_SIGN_BR               1.0f
 #define APP_ENCODER_SIGN_BL               1.0f
-#define APP_ENCODER_SIGN_CV              -1.0f
+#define APP_ENCODER_SIGN_CV               1.0f
 
 /* Flip to -1.0f if positive controller output rotates the motor in the wrong direction. */
 #define APP_MOTOR_SIGN_WR                -1.0f
