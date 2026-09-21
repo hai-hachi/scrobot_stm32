@@ -62,17 +62,11 @@
 #define APP_UART_BAUD                     1000000U
 
 /*
- * Encoder counts per mechanical OUTPUT-shaft revolution.
+ * Effective encoder counts per mechanical OUTPUT-shaft revolution.
  *
- * The project uses x4 quadrature counting:
- *   counts/rev = encoder_PPR * gearbox_ratio * 4
- *
- * WR/WL: 17 PPR * 51:1 * 4 = 3468 counts/rev
- * BR/BL: 11 PPR * 9.6:1 * 4 = 422.4 counts/rev
- * CV:    11 PPR * 10:1 * 4 = 440 counts/rev
- *
- * Verify the real count change over one output-shaft revolution before final
- * system identification, since encoder vendor "PPR" terminology can vary.
+ * These are the current calibrated/configured values used by the firmware.
+ * Keep them based on measured output-shaft counts rather than relying only on
+ * vendor PPR/gear-ratio labels, which have varied between the installed motors.
  */
 #define APP_CPR_WR                        3264.0f
 #define APP_CPR_WL                        3264.0f
