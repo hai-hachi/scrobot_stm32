@@ -141,7 +141,16 @@ typedef struct
 typedef struct
 {
     volatile float ref_rpm;
+
+    /* Final RPM used by PIDF and UART feedback. */
     volatile float rpm;
+
+    /* Selected estimator output before the optional low-pass filter. */
+    volatile float rpm_raw;
+
+    /* Period-based M/T estimate, retained as the very-low-speed fallback. */
+    float rpm_mt;
+
     volatile float last_output;
 
     float counts_per_rev;
@@ -151,6 +160,18 @@ typedef struct
     EncoderType_t encoder_type;
     TIM_HandleTypeDef *encoder_timer;
     MT_State_t mt;
+
+    /* Optional count-window + M/T hybrid estimator. */
+    bool hybrid_rpm_enabled;
+    bool rpm_window_initialized;
+    uint8_t rpm_window_ticks;
+    uint8_t rpm_window_tick_count;
+    uint8_t rpm_window_min_counts;
+    uint32_t rpm_window_prev_count;
+
+    /* First-order low-pass applied to the selected raw estimate. */
+    float rpm_lpf_alpha;
+    bool rpm_lpf_initialized;
 
     DriverType_t driver_type;
     TIM_HandleTypeDef *pwm_timer;
@@ -267,7 +288,13 @@ static void Motor_RecordBoundary(Motor_t *motor, uint32_t count, uint32_t timest
 static int32_t Motor_CountDifference(const Motor_t *motor,
                                      uint32_t current,
                                      uint32_t previous);
+static uint32_t Motor_ReadEncoderCount(const Motor_t *motor);
+static void Motor_ConfigureHybridRPM(Motor_t *motor,
+                                     uint8_t window_ticks,
+                                     uint8_t min_counts,
+                                     float cutoff_hz);
 static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles);
+static void Motor_UpdateRPM(Motor_t *motor, uint32_t now_cycles);
 static void Motor_ApplyOutput(Motor_t *motor, float command);
 static void Motor_ApplyDutyNormalized(Motor_t *motor, float duty);
 static void Motor_StopOutput(Motor_t *motor);
@@ -468,6 +495,7 @@ static void Motor_Init(Motor_t *motor,
     motor->motor_sign = motor_sign;
     motor->encoder_type = encoder_type;
     motor->encoder_timer = encoder_timer;
+    motor->rpm_lpf_alpha = 1.0f;
 
     motor->driver_type = driver_type;
     motor->pwm_timer = pwm_timer;
@@ -507,6 +535,44 @@ static int32_t Motor_CountDifference(const Motor_t *motor,
     return (int32_t)(current - previous);
 }
 
+static uint32_t Motor_ReadEncoderCount(const Motor_t *motor)
+{
+    if (motor->encoder_type == ENC_SOFTWARE) {
+        return (uint32_t)cv_encoder_count;
+    }
+
+    if (motor->encoder_timer == NULL) {
+        return 0U;
+    }
+
+    return __HAL_TIM_GET_COUNTER(motor->encoder_timer);
+}
+
+static void Motor_ConfigureHybridRPM(Motor_t *motor,
+                                     uint8_t window_ticks,
+                                     uint8_t min_counts,
+                                     float cutoff_hz)
+{
+    if (motor == NULL) {
+        return;
+    }
+
+    motor->hybrid_rpm_enabled = true;
+    motor->rpm_window_ticks = (window_ticks > 0U) ? window_ticks : 1U;
+    motor->rpm_window_min_counts = min_counts;
+    motor->rpm_window_tick_count = 0U;
+    motor->rpm_window_initialized = false;
+    motor->rpm_lpf_initialized = false;
+
+    if (cutoff_hz > 0.0f) {
+        const float omega_ts =
+            6.28318530718f * cutoff_hz * APP_CONTROL_TS_S;
+        motor->rpm_lpf_alpha = omega_ts / (1.0f + omega_ts);
+    } else {
+        motor->rpm_lpf_alpha = 1.0f;
+    }
+}
+
 static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
 {
     uint32_t edge_count;
@@ -525,7 +591,7 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
             motor->mt.prev_edge_time_cycles = edge_time;
             motor->mt.prev_edge_sequence = edge_sequence;
             motor->mt.initialized = true;
-            motor->rpm = 0.0f;
+            motor->rpm_mt = 0.0f;
             return;
         }
 
@@ -536,7 +602,7 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
             edge_time - motor->mt.prev_edge_time_cycles;
 
         if (delta_cycles > 0U && delta_count != 0 && motor->counts_per_rev > 0.0f) {
-            motor->rpm =
+            motor->rpm_mt =
                 motor->encoder_sign *
                 ((60.0f * (float)cpu_clock_hz * (float)delta_count) /
                  (motor->counts_per_rev * (float)delta_cycles));
@@ -551,8 +617,69 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
     if (motor->mt.initialized) {
         const uint32_t age_cycles = now_cycles - edge_time;
         if (age_cycles >= mt_zero_timeout_cycles) {
-            motor->rpm = 0.0f;
+            motor->rpm_mt = 0.0f;
         }
+    }
+}
+
+static void Motor_UpdateRPM(Motor_t *motor, uint32_t now_cycles)
+{
+    Motor_UpdateRPM_MT(motor, now_cycles);
+
+    /* WR/WL keep the original M/T estimator with no added low-pass delay. */
+    if (!motor->hybrid_rpm_enabled) {
+        motor->rpm_raw = motor->rpm_mt;
+        motor->rpm = motor->rpm_raw;
+        return;
+    }
+
+    const uint32_t current_count = Motor_ReadEncoderCount(motor);
+
+    if (!motor->rpm_window_initialized) {
+        motor->rpm_window_prev_count = current_count;
+        motor->rpm_window_tick_count = 0U;
+        motor->rpm_window_initialized = true;
+        motor->rpm_raw = motor->rpm_mt;
+    } else {
+        motor->rpm_window_tick_count++;
+
+        if (motor->rpm_window_tick_count >= motor->rpm_window_ticks) {
+            const uint8_t elapsed_ticks = motor->rpm_window_tick_count;
+            const int32_t delta_count =
+                Motor_CountDifference(motor,
+                                      current_count,
+                                      motor->rpm_window_prev_count);
+
+            motor->rpm_window_prev_count = current_count;
+            motor->rpm_window_tick_count = 0U;
+
+            /*
+             * Count-window estimate for normal/high speed.
+             * At very low speed the count quantization is coarse, so use the
+             * latest M/T period estimate instead.
+             */
+            if (fabsf((float)delta_count) >=
+                    (float)motor->rpm_window_min_counts &&
+                motor->counts_per_rev > 0.0f) {
+                const float window_s =
+                    (float)elapsed_ticks * APP_CONTROL_TS_S;
+
+                motor->rpm_raw =
+                    motor->encoder_sign *
+                    ((60.0f * (float)delta_count) /
+                     (motor->counts_per_rev * window_s));
+            } else {
+                motor->rpm_raw = motor->rpm_mt;
+            }
+        }
+    }
+
+    if (!motor->rpm_lpf_initialized) {
+        motor->rpm = motor->rpm_raw;
+        motor->rpm_lpf_initialized = true;
+    } else {
+        motor->rpm +=
+            motor->rpm_lpf_alpha * (motor->rpm_raw - motor->rpm);
     }
 }
 
@@ -1428,31 +1555,42 @@ static void CV_EncoderUpdate(void)
         (HAL_GPIO_ReadPin(CV_encB_GPIO_Port, CV_encB_Pin) == GPIO_PIN_SET) ? 1U : 0U;
 
     const uint8_t current_ab = (uint8_t)((a << 1U) | b);
+
+    if (current_ab == old_ab) {
+        return;
+    }
+
     const uint8_t index = (uint8_t)((old_ab << 2U) | current_ab);
     const int8_t step = quad_table[index];
 
-    if (step != 0) {
-        const uint32_t now = DWT->CYCCNT;
-
-        if (cv_last_accepted_edge_cycles != 0U &&
-            (now - cv_last_accepted_edge_cycles) < cv_min_edge_cycles) {
-            g_app_debug.cv_deglitch_rejects++;
-            cv_prev_ab = current_ab;
-            return;
-        }
-
-        cv_last_accepted_edge_cycles = now;
-        cv_encoder_count += step;
-
-        /* Match hardware M/T boundary style: timestamp only A-channel rising edges. */
-        if (old_a == 0U && a == 1U) {
-            Motor_RecordBoundary(&motorCV,
-                                 (uint32_t)cv_encoder_count,
-                                 now);
-        }
+    /*
+     * A two-bit jump is not a valid quadrature transition. Do not advance the
+     * decoder state on a rejected transition; doing so would turn a short
+     * glitch into a later false count.
+     */
+    if (step == 0) {
+        g_app_debug.cv_deglitch_rejects++;
+        return;
     }
 
+    const uint32_t now = DWT->CYCCNT;
+
+    if (cv_last_accepted_edge_cycles != 0U &&
+        (now - cv_last_accepted_edge_cycles) < cv_min_edge_cycles) {
+        g_app_debug.cv_deglitch_rejects++;
+        return;
+    }
+
+    cv_last_accepted_edge_cycles = now;
+    cv_encoder_count += step;
     cv_prev_ab = current_ab;
+
+    /* Match hardware M/T boundary style: timestamp only A-channel rising edges. */
+    if (old_a == 0U && a == 1U) {
+        Motor_RecordBoundary(&motorCV,
+                             (uint32_t)cv_encoder_count,
+                             now);
+    }
 }
 
 /* =========================== Control loop ================================= */
@@ -1463,11 +1601,11 @@ static void App_ControlUpdate(void)
     App_SafetyService();
 
     const uint32_t now_cycles = DWT->CYCCNT;
-    Motor_UpdateRPM_MT(&motorWR, now_cycles);
-    Motor_UpdateRPM_MT(&motorWL, now_cycles);
-    Motor_UpdateRPM_MT(&motorBR, now_cycles);
-    Motor_UpdateRPM_MT(&motorBL, now_cycles);
-    Motor_UpdateRPM_MT(&motorCV, now_cycles);
+    Motor_UpdateRPM(&motorWR, now_cycles);
+    Motor_UpdateRPM(&motorWL, now_cycles);
+    Motor_UpdateRPM(&motorBR, now_cycles);
+    Motor_UpdateRPM(&motorBL, now_cycles);
+    Motor_UpdateRPM(&motorCV, now_cycles);
 
     if (estop_active) {
         App_UpdateDebugSnapshot();
@@ -1598,6 +1736,12 @@ static void App_UpdateDebugSnapshot(void)
     g_app_debug.rpm_bl = motorBL.rpm;
     g_app_debug.rpm_cv = motorCV.rpm;
 
+    g_app_debug.rpm_raw_wr = motorWR.rpm_raw;
+    g_app_debug.rpm_raw_wl = motorWL.rpm_raw;
+    g_app_debug.rpm_raw_br = motorBR.rpm_raw;
+    g_app_debug.rpm_raw_bl = motorBL.rpm_raw;
+    g_app_debug.rpm_raw_cv = motorCV.rpm_raw;
+
     g_app_debug.output_wr = motorWR.last_output;
     g_app_debug.output_wl = motorWL.last_output;
     g_app_debug.output_br = motorBR.last_output;
@@ -1714,6 +1858,24 @@ void App_Init(void)
                APP_PID_CV_KI,
                APP_PID_CV_KD,
                APP_PID_CV_TF);
+
+    /*
+     * WR/WL keep M/T only.
+     * BR/BL/CV use 20 ms count-window speed above the low-speed threshold,
+     * fall back to M/T at very low speed, then use a small IIR low-pass.
+     */
+    Motor_ConfigureHybridRPM(&motorBR,
+                             APP_AUX_RPM_WINDOW_TICKS,
+                             APP_AUX_RPM_WINDOW_MIN_COUNTS,
+                             APP_BRBL_RPM_LPF_HZ);
+    Motor_ConfigureHybridRPM(&motorBL,
+                             APP_AUX_RPM_WINDOW_TICKS,
+                             APP_AUX_RPM_WINDOW_MIN_COUNTS,
+                             APP_BRBL_RPM_LPF_HZ);
+    Motor_ConfigureHybridRPM(&motorCV,
+                             APP_AUX_RPM_WINDOW_TICKS,
+                             APP_AUX_RPM_WINDOW_MIN_COUNTS,
+                             APP_CV_RPM_LPF_HZ);
 
     /* Start hardware encoder counters without enabling both CC1/CC2 interrupts. */
     if (HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL) != HAL_OK) {
