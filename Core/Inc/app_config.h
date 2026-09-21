@@ -44,10 +44,10 @@
  * Verify the real count change over one output-shaft revolution before final
  * system identification, since encoder vendor "PPR" terminology can vary.
  */
-#define APP_CPR_WR                        3468.0f
-#define APP_CPR_WL                        3468.0f
-#define APP_CPR_BR                        422.4f
-#define APP_CPR_BL                        422.4f
+#define APP_CPR_WR                        3264.0f
+#define APP_CPR_WL                        3264.0f
+#define APP_CPR_BR                        400.0f
+#define APP_CPR_BL                        400.0f
 #define APP_CPR_CV                        3960.0f
 
 /* Maximum accepted closed-loop speed references. */
