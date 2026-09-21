@@ -44,7 +44,7 @@ typedef struct
     volatile int32_t encoder_count_bl;
     volatile int32_t encoder_count_cv;
 
-    /* CV EXTI quadrature transitions rejected by the software deglitch filter. */
+    /* CV EXTI transitions rejected as invalid quadrature or too-close glitches. */
     volatile uint32_t cv_deglitch_rejects;
 
     volatile float ref_rpm_wr;
