@@ -179,6 +179,8 @@ static volatile uint32_t app_fault_flags = 0U;
 /* CV software quadrature counter. */
 static volatile int32_t cv_encoder_count = 0;
 static uint8_t cv_prev_ab = 0U;
+static uint32_t cv_last_accepted_edge_cycles = 0U;
+static uint32_t cv_min_edge_cycles = 0U;
 
 /* DWT/Cortex-M4 timestamp information. */
 static uint32_t cpu_clock_hz = 100000000U;
@@ -311,6 +313,7 @@ static void UART_ServiceTx(void);
 static void CV_EncoderUpdate(void);
 static void App_ControlUpdate(void);
 static void App_UpdateDebugSnapshot(void);
+static void App_ConfigureAuxEncoderFilters(void);
 
 /* =========================== Utility ====================================== */
 static uint32_t App_EnterCritical(void)
@@ -1429,13 +1432,23 @@ static void CV_EncoderUpdate(void)
     const int8_t step = quad_table[index];
 
     if (step != 0) {
+        const uint32_t now = DWT->CYCCNT;
+
+        if (cv_last_accepted_edge_cycles != 0U &&
+            (now - cv_last_accepted_edge_cycles) < cv_min_edge_cycles) {
+            g_app_debug.cv_deglitch_rejects++;
+            cv_prev_ab = current_ab;
+            return;
+        }
+
+        cv_last_accepted_edge_cycles = now;
         cv_encoder_count += step;
 
         /* Match hardware M/T boundary style: timestamp only A-channel rising edges. */
         if (old_a == 0U && a == 1U) {
             Motor_RecordBoundary(&motorCV,
                                  (uint32_t)cv_encoder_count,
-                                 DWT->CYCCNT);
+                                 now);
         }
     }
 
@@ -1524,6 +1537,26 @@ static void App_ControlUpdate(void)
     UART_QueueFeedback();
 }
 
+static void App_ConfigureAuxEncoderFilters(void)
+{
+    /*
+     * TIM1 = BR, TIM4 = BL.
+     * Apply the encoder input filter after CubeMX initialization so this
+     * protection remains active even if generated main.c is regenerated.
+     *
+     * Both channels use the same ICxF field in CCMR1 while in encoder mode.
+     */
+    MODIFY_REG(htim1.Instance->CCMR1,
+               TIM_CCMR1_IC1F | TIM_CCMR1_IC2F,
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC1F_Pos) |
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC2F_Pos));
+
+    MODIFY_REG(htim4.Instance->CCMR1,
+               TIM_CCMR1_IC1F | TIM_CCMR1_IC2F,
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC1F_Pos) |
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC2F_Pos));
+}
+
 static void App_UpdateDebugSnapshot(void)
 {
     uint32_t status = app_fault_flags;
@@ -1576,6 +1609,13 @@ static void App_UpdateDebugSnapshot(void)
 void App_Init(void)
 {
     DWT_TimebaseInit();
+
+    cv_min_edge_cycles =
+        (uint32_t)(((uint64_t)cpu_clock_hz * APP_CV_MIN_EDGE_US) / 1000000ULL);
+    cv_last_accepted_edge_cycles = 0U;
+    g_app_debug.cv_deglitch_rejects = 0U;
+
+    App_ConfigureAuxEncoderFilters();
 
     /* Preserve the reset cause for Live Expression inspection, then clear it. */
     g_app_debug.reset_flags_raw = RCC->CSR;
