@@ -53,11 +53,19 @@ typedef struct
     volatile float ref_rpm_bl;
     volatile float ref_rpm_cv;
 
+    /* RPM used by feedback/PIDF after the configured estimator/filter. */
     volatile float rpm_wr;
     volatile float rpm_wl;
     volatile float rpm_br;
     volatile float rpm_bl;
     volatile float rpm_cv;
+
+    /* Selected raw RPM estimate before the auxiliary BR/BL/CV low-pass filter. */
+    volatile float rpm_raw_wr;
+    volatile float rpm_raw_wl;
+    volatile float rpm_raw_br;
+    volatile float rpm_raw_bl;
+    volatile float rpm_raw_cv;
 
     /* Controller/open-loop command after sign and output limiting, PWM counts. */
     volatile float output_wr;
