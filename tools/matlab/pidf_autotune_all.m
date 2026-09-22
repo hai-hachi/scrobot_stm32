@@ -63,6 +63,23 @@ overshootTarget_pct_all = [
     2.0     % CV
 ];
 
+% Model-selection override for PIDF tuning.
+% Rows correspond to motors = ["WR","WL","BR","BL","CV"].
+%
+% Allowed values:
+%   "AUTO"    -> tune the model with the highest validation fit
+%   "C_1P0Z"  -> force continuous 1 pole / 0 zero
+%   "C_2P1Z"  -> force continuous 2 pole / 1 zero
+%   "D_1P0Z"  -> force discrete   1 pole / 0 zero
+%   "D_2P1Z"  -> force discrete   2 pole / 1 zero
+modelOverride_all = [
+    "AUTO";   % WR
+    "AUTO";   % WL
+    "AUTO";   % BR
+    "AUTO";   % BL
+    "AUTO"    % CV
+];
+
 % Search a range of robust PIDF designs.
 % The 100 Hz sample rate gives a sampling angular frequency of 2*pi/Ts.
 % Keep the requested crossover well below it.
@@ -81,6 +98,7 @@ for m = 1:numel(motors)
     % Motor-specific closed-loop requirements
     settlingTarget_s = settlingTarget_s_all(m);
     overshootTarget_pct = overshootTarget_pct_all(m);
+    modelOverride = upper(strtrim(modelOverride_all(m)));
 
     %% Find latest multistep file
 
@@ -106,6 +124,7 @@ for m = 1:numel(motors)
     fprintf("========================================\n");
     fprintf("Settling-time target: < %.3f s\n",settlingTarget_s);
     fprintf("Overshoot target    : < %.2f %%\n",overshootTarget_pct);
+    fprintf("Model override      : %s\n",modelOverride);
 
     %% Read data
 
@@ -343,17 +362,71 @@ for m = 1:numel(motors)
 
     fprintf("----------------------------------------\n");
 
-    %% Choose best identified plant
+    %% Choose model for PIDF tuning
 
-    [bestFit,bestIndex] = max(fits);
+    allowedModelOverrides = [
+        "AUTO"
+        "C_1P0Z"
+        "C_2P1Z"
+        "D_1P0Z"
+        "D_2P1Z"
+    ];
 
-    if ~isfinite(bestFit)
+    if ~any(modelOverride == allowedModelOverrides)
+
+        error( ...
+            "%s: invalid model override '%s'. Allowed: AUTO, C_1P0Z, C_2P1Z, D_1P0Z, D_2P1Z.", ...
+            motor, ...
+            modelOverride);
+
+    end
+
+    % Highest-fit model is still recorded even when an override is used.
+    [autoBestFit,autoBestIndex] = max(fits);
+
+    if ~isfinite(autoBestFit)
 
         warning("No valid model found for %s.",motor);
-
         continue;
 
     end
+
+    autoBestModelName = modelNames(autoBestIndex);
+
+    if modelOverride == "AUTO"
+
+        selectedModelIndex = autoBestIndex;
+        modelSelectionMode = "AUTO";
+
+    else
+
+        selectedModelIndex = find(modelNames == modelOverride,1);
+        modelSelectionMode = "OVERRIDE";
+
+        if isempty(selectedModelIndex)
+
+            error( ...
+                "%s: override model '%s' was not found.", ...
+                motor, ...
+                modelOverride);
+
+        end
+
+        if ~isfinite(fits(selectedModelIndex)) || isempty(models{selectedModelIndex})
+
+            warning( ...
+                "%s: override model %s is unavailable/unstable and cannot be tuned.", ...
+                motor, ...
+                modelOverride);
+
+            continue;
+
+        end
+
+    end
+
+    bestIndex = selectedModelIndex;
+    bestFit = fits(bestIndex);
 
     bestModelName = modelNames(bestIndex);
     bestModelLongName = modelLongNames(bestIndex);
@@ -362,9 +435,25 @@ for m = 1:numel(motors)
     bestPlant = tf(bestIDModel);
 
     fprintf( ...
-        "\nBEST MODEL: %s = %.2f %%\n", ...
-        bestModelLongName, ...
-        bestFit);
+        "\nAUTO BEST MODEL: %s = %.2f %%\n", ...
+        modelLongNames(autoBestIndex), ...
+        autoBestFit);
+
+    if modelSelectionMode == "OVERRIDE"
+
+        fprintf( ...
+            "TUNING OVERRIDE: %s = %.2f %%\n", ...
+            bestModelLongName, ...
+            bestFit);
+
+    else
+
+        fprintf( ...
+            "TUNING MODEL: %s = %.2f %%\n", ...
+            bestModelLongName, ...
+            bestFit);
+
+    end
 
     disp(bestPlant);
 
@@ -810,6 +899,10 @@ for m = 1:numel(motors)
 
     row = table( ...
         motor, ...
+        string(modelSelectionMode), ...
+        string(modelOverride), ...
+        autoBestModelName, ...
+        autoBestFit, ...
         bestModelName, ...
         bestFit, ...
         string(tunePlantSource), ...
@@ -834,8 +927,12 @@ for m = 1:numel(motors)
         closedLoopStable, ...
         'VariableNames',{ ...
         'Motor', ...
-        'BestModel', ...
-        'BestFit_pct', ...
+        'ModelSelectionMode', ...
+        'ModelOverride', ...
+        'AutoBestModel', ...
+        'AutoBestFit_pct', ...
+        'TunedModel', ...
+        'TunedModelFit_pct', ...
         'TuningPlant', ...
         'Crossover_rad_s', ...
         'TargetPhaseMargin_deg', ...
@@ -896,11 +993,12 @@ fprintf( ...
     "Controller implementation: Ts = %.3f s, Trapezoidal I, Trapezoidal/Tustin D.\n", ...
     Ts);
 
-fprintf("\nMotor-specific closed-loop targets:\n");
+fprintf("\nMotor-specific closed-loop targets and model overrides:\n");
 for m = 1:numel(motors)
     fprintf( ...
-        "  %s: settling time < %.3f s, overshoot < %.2f %%\n", ...
+        "  %s: settling time < %.3f s, overshoot < %.2f %%, model = %s\n", ...
         motors(m), ...
         settlingTarget_s_all(m), ...
-        overshootTarget_pct_all(m));
+        overshootTarget_pct_all(m), ...
+        modelOverride_all(m));
 end
