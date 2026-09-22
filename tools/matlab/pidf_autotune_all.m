@@ -9,7 +9,7 @@
 %        Discrete   1P0Z
 %        Discrete   2P1Z
 %   -> choose highest validation fit
-%   -> if best plant is continuous, discretize plant using ZOH at Ts = 0.01 s
+%   -> if best plant is continuous, discretize plant using bilinear/Tustin at Ts = 0.01 s
 %   -> tune a DISCRETE PIDF using trapezoidal integral + derivative formulas
 %      to match the STM32 PIDF implementation
 %   -> scale controller output from % duty to STM32 PWM counts
@@ -463,14 +463,14 @@ for m = 1:numel(motors)
 
     if bestPlant.Ts == 0
 
-        % The physical PWM command is held between controller updates.
-        % Therefore use ZOH to represent the continuous plant at 100 Hz.
+        % Discretize the identified continuous plant with the bilinear
+        % (Tustin) transform at the STM32 controller sample time.
         plantForTune = c2d( ...
             bestPlant, ...
             Ts, ...
-            'zoh');
+            'tustin');
 
-        tunePlantSource = "Continuous model -> ZOH at 100 Hz";
+        tunePlantSource = "Continuous model -> Tustin at 100 Hz";
 
     else
 
