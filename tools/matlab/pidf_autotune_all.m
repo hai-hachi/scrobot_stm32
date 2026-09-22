@@ -32,6 +32,16 @@ close all;
 
 motors = ["WR","WL","BR","BL","CV"];
 
+% Resolve data/output paths from this script so the result does not depend
+% on MATLAB's current working directory.
+scriptDir = fileparts(mfilename('fullpath'));
+toolsDir = fileparts(scriptDir);
+rawDataDir = fullfile(toolsDir,'raw_data');
+
+if ~exist(rawDataDir,'dir')
+    mkdir(rawDataDir);
+end
+
 %% Settings
 
 Ts = 0.01;                 % STM32 control period = 100 Hz
@@ -103,7 +113,7 @@ for m = 1:numel(motors)
     %% Find latest multistep file
 
     files = dir(fullfile( ...
-        pwd, ...
+        toolsDir, ...
         '**', ...
         motor + "_multistep_*.csv"));
 
@@ -973,12 +983,6 @@ assignin( ...
     results);
 
 %% Save for Raspberry Pi updater
-
-rawDataDir = fullfile(pwd,'raw_data');
-
-if ~exist(rawDataDir,'dir')
-    mkdir(rawDataDir);
-end
 
 outputCSV = fullfile( ...
     rawDataDir, ...
