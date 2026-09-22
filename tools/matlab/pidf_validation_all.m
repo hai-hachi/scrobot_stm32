@@ -12,6 +12,11 @@ close all;
 
 motors = ["WR","WL","BR","BL","CV"];
 
+% Resolve the tools directory from this script so validation CSV discovery
+% does not depend on MATLAB's current working directory.
+scriptDir = fileparts(mfilename('fullpath'));
+toolsDir = fileparts(scriptDir);
+
 % Light filtering for readable validation plots.
 % Set to 0 to plot completely raw RPM.
 averageWindow_s = 0.05;
@@ -24,7 +29,7 @@ for m = 1:numel(motors)
 
     motor = motors(m);
 
-    files = dir(fullfile(pwd,'**',motor + "_pid_validation_*.csv"));
+    files = dir(fullfile(toolsDir,'**',motor + "_pid_validation_*.csv"));
 
     if isempty(files)
         warning("No PID validation CSV found for %s.",motor);
