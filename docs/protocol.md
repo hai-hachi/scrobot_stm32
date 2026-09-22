@@ -75,9 +75,15 @@ float CV_rpm
 
 Limits:
 
-- WR/WL: ±200 RPM
+- WR/WL: ±100 RPM
 - BR/BL: ±400 RPM
-- CV: ±600 RPM
+- CV: ±80 RPM
+
+Nominal working references:
+
+- WR/WL: 95 RPM
+- BR/BL: 390 RPM
+- CV: 80 RPM
 
 ## FEEDBACK
 
