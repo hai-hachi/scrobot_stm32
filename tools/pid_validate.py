@@ -4,7 +4,12 @@
 The test does NOT change PIDF gains.
 
 Example:
-    python pid_validate.py --port /dev/ttyAMA0 --motor WR --rpm 120
+    python pid_validate.py --port /dev/ttyAMA0 --motor WR
+
+By default each motor is stepped to its nominal working speed:
+    WR/WL = 95 RPM, BR/BL = 390 RPM, CV = 80 RPM
+
+Use --rpm only when an explicit validation reference is required.
 
 Sequence:
     0 RPM -> target RPM -> 0 RPM
@@ -31,11 +36,19 @@ from scrobot_protocol import (
 
 
 RPM_LIMITS = {
-    "WR": 200.0,
-    "WL": 200.0,
+    "WR": 100.0,
+    "WL": 100.0,
     "BR": 400.0,
     "BL": 400.0,
-    "CV": 600.0,
+    "CV": 80.0,
+}
+
+NOMINAL_RPM = {
+    "WR": 95.0,
+    "WL": 95.0,
+    "BR": 390.0,
+    "BL": 390.0,
+    "CV": 80.0,
 }
 
 
@@ -80,7 +93,11 @@ def main():
     )
     ap.add_argument("--port", required=True)
     ap.add_argument("--motor", choices=MOTOR_IDS, required=True)
-    ap.add_argument("--rpm", type=float, required=True)
+    ap.add_argument(
+        "--rpm",
+        type=float,
+        help="Validation reference RPM. Defaults to the motor nominal working speed.",
+    )
     ap.add_argument("--pre", type=float, default=2.0)
     ap.add_argument("--duration", type=float, default=5.0)
     ap.add_argument("--post", type=float, default=2.0)
@@ -92,13 +109,15 @@ def main():
     if args.pre < 0.0 or args.duration <= 0.0 or args.post < 0.0:
         raise SystemExit("--pre/--post must be >= 0 and --duration must be > 0")
 
+    target_rpm = args.rpm if args.rpm is not None else NOMINAL_RPM[args.motor]
+
     limit = RPM_LIMITS[args.motor]
-    if abs(args.rpm) > limit:
+    if abs(target_rpm) > limit:
         raise SystemExit(
             f"{args.motor} reference must be within +/-{limit:.0f} RPM"
         )
 
-    output = args.output or default_output(args.motor, args.rpm)
+    output = args.output or default_output(args.motor, target_rpm)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     client = SerialClient(args.port, args.baud)
@@ -185,12 +204,12 @@ def main():
             try:
                 print(
                     f"Running {args.motor}: "
-                    f"0 -> {args.rpm:.1f} RPM -> 0 "
+                    f"0 -> {target_rpm:.1f} RPM -> 0 "
                     f"({args.pre:.1f}s / {args.duration:.1f}s / {args.post:.1f}s)"
                 )
 
                 run_segment(0.0, args.pre)
-                run_segment(args.rpm, args.duration)
+                run_segment(target_rpm, args.duration)
                 run_segment(0.0, args.post)
 
             finally:
