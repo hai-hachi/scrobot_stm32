@@ -13,9 +13,9 @@ Set one motor:
     python pid_update.py --port /dev/ttyAMA0 set --motor WR \
         --kp 12.3 --ki 45.6 --kd 0.12 --tf 0.01
 
-Load all five from MATLAB's pidf_autotune_results.csv:
+Load all five from MATLAB's tools/raw_data/pidf_autotune_results.csv:
     python pid_update.py --port /dev/ttyAMA0 load-csv \
-        --file pidf_autotune_results.csv
+        --file raw_data/pidf_autotune_results.csv
 
 PID values changed through UART are runtime-only. They revert to the
 app_config.h defaults after an STM32 reset/power cycle.
