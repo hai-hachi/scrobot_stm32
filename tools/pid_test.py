@@ -39,7 +39,7 @@ def main():
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
 
-    limits = {"WR": 200.0, "WL": 200.0, "BR": 400.0, "BL": 400.0, "CV": 600.0}
+    limits = {"WR": 100.0, "WL": 100.0, "BR": 400.0, "BL": 400.0, "CV": 80.0}
     if abs(args.rpm) > limits[args.motor]:
         raise SystemExit(f"{args.motor} limit is +/-{limits[args.motor]} RPM")
 
