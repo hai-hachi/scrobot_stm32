@@ -4,7 +4,7 @@ import time
 
 from scrobot_protocol import SerialClient, TYPE_FEEDBACK, decode_feedback
 
-CPR = {"WR": 3468.0, "WL": 3468.0, "BR": 422.4, "BL": 422.4, "CV": 440.0}
+CPR = {"WR": 3264.0, "WL": 3264.0, "BR": 400.0, "BL": 400.0, "CV": 3960.0}
 
 
 def main():
