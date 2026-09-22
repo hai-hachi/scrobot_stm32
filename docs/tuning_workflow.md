@@ -21,7 +21,7 @@ Only one host program should own `/dev/ttyAMA0` at a time.
 
 ```bash
 cd ~/scrobot_stm32
-git switch firmware-safety-prep
+git switch main
 git pull
 
 cd tools
@@ -32,7 +32,7 @@ mkdir -p data raw_data
 ### PC
 
 ```powershell
-git switch firmware-safety-prep
+git switch main
 git pull
 
 New-Item -ItemType Directory -Force .\tools\raw_data\bidir | Out-Null
