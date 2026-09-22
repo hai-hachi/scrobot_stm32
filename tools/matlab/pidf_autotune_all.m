@@ -408,7 +408,7 @@ for m = 1:numel(motors)
     fprintf("Derivative formula      = %s\n",C_percent.DFormula);
     fprintf("Tuning plant            = %s\n",tunePlantSource);
 
-    if isprop(tuneInfo,'CrossoverFrequency')
+    if isfield(tuneInfo,'CrossoverFrequency')
 
         fprintf( ...
             "Crossover frequency     = %.4f rad/s\n", ...
@@ -416,7 +416,7 @@ for m = 1:numel(motors)
 
     end
 
-    if isprop(tuneInfo,'PhaseMargin')
+    if isfield(tuneInfo,'PhaseMargin')
 
         fprintf( ...
             "Phase margin            = %.2f deg\n", ...
