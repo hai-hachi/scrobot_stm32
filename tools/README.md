@@ -32,15 +32,15 @@ python serial_monitor.py --port /dev/ttyAMA0
 python encoder_test.py --port /dev/ttyAMA0
 ```
 
-Expected counts per output-shaft revolution:
+Expected calibrated counts per output-shaft revolution:
 
 | Motor | Counts/rev |
 |---|---:|
-| WR | 3468 |
-| WL | 3468 |
-| BR | 422.4 |
-| BL | 422.4 |
-| CV | 440 |
+| WR | 3264 |
+| WL | 3264 |
+| BR | 400 |
+| BL | 400 |
+| CV | 3960 |
 
 ## Fixed-duty motor test
 
@@ -101,12 +101,13 @@ tools/matlab/pidf_autotune_all.m
 ```
 
 Open it in MATLAB Live Editor (or copy it into a new Live Script and save as
-`.mlx`). It uses the latest `*_multistep_*.csv` for each motor, estimates
-1P0Z / 1P1Z / 2P0Z / 2P1Z, selects the best validation fit, runs
-`pidtune(..., 'PIDF')`, and saves:
+`.mlx`). It uses the latest `*_multistep_*.csv` for each motor, estimates continuous
+and discrete 1P0Z / 2P1Z models, supports per-motor model override, tunes a
+100 Hz discrete PIDF that matches the STM32 trapezoidal implementation, and
+saves:
 
 ```text
-pidf_autotune_results.csv
+raw_data/pidf_autotune_results.csv
 ```
 
 The CSV contains both MATLAB gains in percent-duty units and gains scaled for
@@ -117,8 +118,32 @@ Runtime PIDF updater:
 ```bash
 python pid_update.py --port /dev/ttyAMA0 get-all
 python pid_update.py --port /dev/ttyAMA0 set --motor WR --kp 10 --ki 20 --kd 0.1 --tf 0.01
-python pid_update.py --port /dev/ttyAMA0 load-csv --file pidf_autotune_results.csv
+python pid_update.py --port /dev/ttyAMA0 load-csv --file raw_data/pidf_autotune_results.csv
 ```
 
 UART PIDF updates are volatile and return to the values in `app_config.h`
 after an STM32 reset or power cycle.
+
+
+## Current speed limits and validation references
+
+| Motor | Max reference | Nominal validation step |
+|---|---:|---:|
+| WR | 100 RPM | 95 RPM |
+| WL | 100 RPM | 95 RPM |
+| BR | 400 RPM | 390 RPM |
+| BL | 400 RPM | 390 RPM |
+| CV | 80 RPM | 80 RPM |
+
+`pid_validate.py` uses the nominal value automatically when `--rpm` is omitted:
+
+```bash
+python pid_validate.py --port /dev/ttyAMA0 --motor WR
+python pid_validate.py --port /dev/ttyAMA0 --motor WL
+python pid_validate.py --port /dev/ttyAMA0 --motor BR
+python pid_validate.py --port /dev/ttyAMA0 --motor BL
+python pid_validate.py --port /dev/ttyAMA0 --motor CV
+```
+
+For the complete acquisition, SCP, MATLAB, tuning, upload, and validation
+sequence, see [../docs/tuning_workflow.md](../docs/tuning_workflow.md).
