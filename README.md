@@ -17,13 +17,13 @@ This repository contains the firmware for the STM32F411CEU6 (Black Pill) that ha
 
 ## Controlled motors
 
-| ID | Function |
-| --- | --- |
-| WR | Right drive wheel |
-| WL | Left drive wheel |
-| BR | Auxiliary / collection motor |
-| BL | Auxiliary / collection motor |
-| CV | Conveyor motor |
+| ID | Function | Calibrated CPR | Max reference | Nominal working speed |
+| --- | --- | ---: | ---: | ---: |
+| WR | Right drive wheel | 3264 | 100 RPM | 95 RPM |
+| WL | Left drive wheel | 3264 | 100 RPM | 95 RPM |
+| BR | Right brush / collection motor | 400 | 400 RPM | 390 RPM |
+| BL | Left brush / collection motor | 400 | 400 RPM | 390 RPM |
+| CV | Conveyor motor | 3960 | 80 RPM | 80 RPM |
 
 ## Main firmware functions
 
@@ -32,7 +32,7 @@ This repository contains the firmware for the STM32F411CEU6 (Black Pill) that ha
 - M/T-based motor-speed estimation
 - PIDF speed control
 - DMA-based UART RX/TX
-- CRC-8 framed communication
+- CRC-16/CCITT-FALSE framed communication
 - Communication watchdog
 - Emergency-stop handling
 - Open-loop system-identification mode
@@ -82,32 +82,41 @@ Important values include:
 - initial PID gains
 - UART baud rate
 
-### Important calibration note
+### Calibration note
 
-The current encoder CPR values in `app_config.h` are marked in the source as placeholders copied from the previous project. They must be verified experimentally before using RPM data for system identification or final closed-loop tuning.
+The current encoder CPR values are calibrated output-shaft counts per revolution and are shared by the firmware documentation and host-side encoder test. If the installed motor/gearbox/encoder hardware changes, recalibrate CPR before repeating system identification or PID tuning.
 
 ## Communication
 
 The STM32 communicates with the Raspberry Pi / ROS 2 computer using USART6 at 1 Mbaud.
 
-Frames use:
+Frames use protocol v2:
 
 ```text
-0xAA 0x55 | TYPE | PAYLOAD | CRC8
+AA 55 | VER | TYPE | SEQ (u16 LE) | LEN | PAYLOAD | CRC16 (u16 LE)
 ```
+
+The CRC is CRC-16/CCITT-FALSE.
 
 See [docs/protocol.md](docs/protocol.md) for the current protocol.
 
-## System identification
+## System identification and PID tuning
 
-The firmware already includes a synchronized open-loop system-identification mode:
+The host tools support the complete calibration workflow:
 
-- `F1`: apply normalized duty command
-- `F2`: return synchronized measured RPM
-- `F3`: apply closed-loop RPM reference for PID testing
-- `F0`: stop tuning and return to normal mode
+1. encoder/filter sanity check
+2. bidirectional duty sweep for deadband/hysteresis
+3. multistep open-loop data capture
+4. continuous/discrete transfer-function identification in MATLAB
+5. PIDF tuning using the STM32-matched 100 Hz trapezoidal controller form
+6. runtime PIDF upload over UART
+7. closed-loop validation at the nominal working speeds
 
-See [docs/system_identification.md](docs/system_identification.md).
+See:
+
+- [System identification notes](docs/system_identification.md)
+- [Complete tuning command workflow](docs/tuning_workflow.md)
+- [Host tools](tools/README.md)
 
 ## Building
 

@@ -19,112 +19,79 @@ extern TIM_HandleTypeDef htim11;
 
 extern UART_HandleTypeDef huart6;
 
-/* =============================== Protocol =================================
+/* =========================== UART protocol v2 =============================
  *
  * Frame:
- *   SOF1 | SOF2 | TYPE | PAYLOAD | CRC8
- *   AA     55
+ *   AA 55 | VER | TYPE | SEQ(u16 LE) | LEN | PAYLOAD | CRC16(u16 LE)
  *
- * Float format:
- *   IEEE-754 binary32, little-endian
+ * CRC-16/CCITT-FALSE:
+ *   poly 0x1021, init 0xFFFF, refin=false, refout=false, xorout=0x0000
+ *   CRC covers VER through the final payload byte. SOF and CRC are excluded.
  *
- * Integer format:
- *   SEQ is uint16_t, little-endian
+ * Pi -> STM32
+ *   10 SETPOINT       : 5 x float RPM [WR, WL, BR, BL, CV]
+ *   11 ARM            : no payload
+ *   12 DISARM         : no payload
+ *   30 SYSID_COMMAND  : motor_id(u8) + duty(float)
+ *   32 SYSID_STOP     : no payload
+ *   40 PID_SET        : motor_id(u8) + Kp, Ki, Kd, Tf
+ *   41 PID_GET        : motor_id(u8)
+ *   50 INFO_REQUEST   : no payload
  *
- * CRC-8:
- *   polynomial 0x07, init 0x00, refin=false, refout=false, xorout=0x00
- *   CRC covers TYPE + PAYLOAD only. SOF1/SOF2 are excluded.
- *
- * NORMAL MODE
- *   Pi -> STM32
- *     A0 : WR_ref, WL_ref                         12 bytes total
- *     A1 : BR_ref, BL_ref, CV_ref                 16 bytes total
- *
- *   STM32 -> Pi, every TIM10 control tick (100 Hz)
- *     01 : WR/WL/BR/BL/CV measured RPM, normal    24 bytes total
- *     00 : WR/WL/BR/BL/CV measured RPM, ESTOP     24 bytes total
- *
- *   Normal 00/01 telemetry is suppressed while F1/F3 tuning mode is active;
- *   tuning uses only the synchronized F2 response.
- *
- * PIDF UPDATE - Pi -> STM32
- *   BA : WR Kp, Ki, Kd, Tf                      20 bytes total
- *   BB : WL Kp, Ki, Kd, Tf                      20 bytes total
- *   B0 : BR Kp, Ki, Kd, Tf                      20 bytes total
- *   B1 : BL Kp, Ki, Kd, Tf                      20 bytes total
- *   B2 : CV Kp, Ki, Kd, Tf                      20 bytes total
- *
- * PIDF ECHO - STM32 -> Pi
- *   CA : WR Kp, Ki, Kd, Tf                      20 bytes total
- *   CB : WL Kp, Ki, Kd, Tf                      20 bytes total
- *   C0 : BR Kp, Ki, Kd, Tf                      20 bytes total
- *   C1 : BL Kp, Ki, Kd, Tf                      20 bytes total
- *   C2 : CV Kp, Ki, Kd, Tf                      20 bytes total
- *
- * TEMPORARY TUNING
- *   F1 : SEQ + WR/WL/BR/BL/CV duty              26 bytes total
- *        Duty is normalized -1.0 ... +1.0.
- *        Receiving F1 automatically enters open-loop SYSID mode.
- *
- *   F3 : SEQ + WR/WL/BR/BL/CV RPM reference     26 bytes total
- *        Receiving F3 automatically enters closed-loop PID-test mode.
- *
- *   F2 : SEQ + WR/WL/BR/BL/CV measured RPM      26 bytes total
- *        Sent by STM32 one control interval after the corresponding F1/F3
- *        command is actually applied at a TIM10 boundary.
- *
- *   F0 : no payload                               4 bytes total
- *        Stop all motors, reset PID state, and return to normal mode.
- *
- * Tuning synchronization:
- *   F1/F3 is received asynchronously and stored as a pending command.
- *   At a TIM10 boundary it becomes active.
- *   At the NEXT TIM10 boundary, measured RPM is returned in F2 with the same
- *   SEQ. This associates each F2 sample with the command that was active over
- *   the preceding 10 ms control interval.
+ * STM32 -> Pi
+ *   20 FEEDBACK       : 100 Hz control/status/count/RPM packet
+ *   21 DIAGNOSTICS    : on request / low-rate host polling
+ *   31 SYSID_SAMPLE   : 100 Hz while SYSID is active
+ *   42 PID_RESPONSE
+ *   51 INFO_RESPONSE
+ *   7F ERROR/NACK
  * ========================================================================== */
 #define SOF1                       0xAAU
 #define SOF2                       0x55U
 
-#define TYPE_RPM_ESTOP             0x00U
-#define TYPE_RPM_NORMAL            0x01U
+#define TYPE_SETPOINT              0x10U
+#define TYPE_ARM                   0x11U
+#define TYPE_DISARM                0x12U
 
-#define TYPE_DRIVE_REF             0xA0U
-#define TYPE_AUX_REF               0xA1U
+#define TYPE_FEEDBACK              0x20U
+#define TYPE_DIAGNOSTICS           0x21U
 
-#define TYPE_PID_WR_SET            0xBAU
-#define TYPE_PID_WL_SET            0xBBU
-#define TYPE_PID_BR_SET            0xB0U
-#define TYPE_PID_BL_SET            0xB1U
-#define TYPE_PID_CV_SET            0xB2U
+#define TYPE_SYSID_COMMAND         0x30U
+#define TYPE_SYSID_SAMPLE          0x31U
+#define TYPE_SYSID_STOP            0x32U
 
-#define TYPE_PID_WR_ECHO           0xCAU
-#define TYPE_PID_WL_ECHO           0xCBU
-#define TYPE_PID_BR_ECHO           0xC0U
-#define TYPE_PID_BL_ECHO           0xC1U
-#define TYPE_PID_CV_ECHO           0xC2U
+#define TYPE_PID_SET               0x40U
+#define TYPE_PID_GET               0x41U
+#define TYPE_PID_RESPONSE          0x42U
 
-#define TYPE_TUNING_STOP           0xF0U
-#define TYPE_SYSID_DUTY            0xF1U
-#define TYPE_TUNING_RPM            0xF2U
-#define TYPE_PID_TEST_REF          0xF3U
+#define TYPE_INFO_REQUEST          0x50U
+#define TYPE_INFO_RESPONSE         0x51U
 
-#define TUNING_MOTOR_COUNT         5U
+#define TYPE_ERROR                 0x7FU
 
-#define TUNING_STOP_FRAME_LEN       4U
-#define DRIVE_FRAME_LEN            12U
-#define AUX_FRAME_LEN              16U
-#define PID_FRAME_LEN              20U
-#define NORMAL_RPM_FRAME_LEN       24U
-#define TUNING_FRAME_LEN           26U
+#define MOTOR_ID_WR                 0U
+#define MOTOR_ID_WL                 1U
+#define MOTOR_ID_BR                 2U
+#define MOTOR_ID_BL                 3U
+#define MOTOR_ID_CV                 4U
+#define MOTOR_COUNT                 5U
 
-#define RX_DMA_BUF_LEN             64U
-#define RX_FRAME_MAX_LEN           TUNING_FRAME_LEN
+#define UART_HEADER_LEN             7U
+#define UART_CRC_LEN                2U
+#define UART_MAX_PAYLOAD_LEN       64U
+#define UART_FRAME_MAX_LEN         (UART_HEADER_LEN + UART_MAX_PAYLOAD_LEN + UART_CRC_LEN)
 
+#define RX_DMA_BUF_LEN            128U
 #define TX_QUEUE_DEPTH              8U
-#define TX_FRAME_MAX_LEN           TUNING_FRAME_LEN
 
-/* =============================== PIDF ===================================== */
+#define ERROR_BAD_VERSION           1U
+#define ERROR_BAD_LENGTH            2U
+#define ERROR_BAD_VALUE             3U
+#define ERROR_NOT_ARMED             4U
+#define ERROR_ESTOP_ACTIVE          5U
+#define ERROR_BAD_MOTOR             6U
+
+/* =============================== PIDF ===================================== *//* =============================== PIDF ===================================== */
 typedef struct
 {
     float Kp;
@@ -158,13 +125,6 @@ typedef enum
     DRIVER_TB6612
 } DriverType_t;
 
-typedef enum
-{
-    APP_MODE_NORMAL = 0,
-    APP_MODE_SYSID,
-    APP_MODE_PID_TEST
-} AppMode_t;
-
 /* Latest encoder-boundary sample used by the M/T estimator. */
 typedef struct
 {
@@ -181,7 +141,17 @@ typedef struct
 typedef struct
 {
     volatile float ref_rpm;
+
+    /* Final RPM used by PIDF and UART feedback. */
     volatile float rpm;
+
+    /* Selected estimator output before the optional low-pass filter. */
+    volatile float rpm_raw;
+
+    /* Period-based M/T estimate, retained as the very-low-speed fallback. */
+    float rpm_mt;
+
+    volatile float last_output;
 
     float counts_per_rev;
     float encoder_sign;
@@ -190,6 +160,18 @@ typedef struct
     EncoderType_t encoder_type;
     TIM_HandleTypeDef *encoder_timer;
     MT_State_t mt;
+
+    /* Optional count-window + M/T hybrid estimator. */
+    bool hybrid_rpm_enabled;
+    bool rpm_window_initialized;
+    uint8_t rpm_window_ticks;
+    uint8_t rpm_window_tick_count;
+    uint8_t rpm_window_min_counts;
+    uint32_t rpm_window_prev_count;
+
+    /* First-order low-pass applied to the selected raw estimate. */
+    float rpm_lpf_alpha;
+    bool rpm_lpf_initialized;
 
     DriverType_t driver_type;
     TIM_HandleTypeDef *pwm_timer;
@@ -211,9 +193,15 @@ static Motor_t motorBR;
 static Motor_t motorBL;
 static Motor_t motorCV;
 
+volatile AppDebug_t g_app_debug = {0};
+
+static volatile uint32_t app_fault_flags = 0U;
+
 /* CV software quadrature counter. */
 static volatile int32_t cv_encoder_count = 0;
 static uint8_t cv_prev_ab = 0U;
+static uint32_t cv_last_accepted_edge_cycles = 0U;
+static uint32_t cv_min_edge_cycles = 0U;
 
 /* DWT/Cortex-M4 timestamp information. */
 static uint32_t cpu_clock_hz = 100000000U;
@@ -221,69 +209,56 @@ static uint32_t mt_zero_timeout_cycles = 25000000U;
 static volatile bool app_initialized = false;
 
 /* Safety/communication state. */
-static volatile uint32_t last_drive_cmd_ms = 0U;
-static volatile bool comm_timeout_active = false;
+static volatile uint32_t last_setpoint_ms = 0U;
+static volatile bool comm_timeout_active = true;
 static volatile bool estop_active = false;
 static bool previous_estop_active = false;
+static volatile bool armed = false;
+static uint16_t last_setpoint_seq = 0U;
 
-/* --------------------- Temporary tuning state ----------------------------- */
-typedef struct
-{
-    uint8_t type;               /* F1 or F3 */
-    uint16_t seq;
-    float value[TUNING_MOTOR_COUNT];
-} TuningCommand_t;
-
-static volatile AppMode_t app_mode = APP_MODE_NORMAL;
-static volatile bool tuning_pending_valid = false;
-static TuningCommand_t tuning_pending;
-
-/* F0 is handled at the next deterministic TIM10 boundary. */
-static volatile bool tuning_exit_requested = false;
-
-/* Command currently being held by the tuning mode. */
-static float sysid_duty[TUNING_MOTOR_COUNT] = {0.0f};
-static uint32_t last_tuning_cmd_ms = 0U;
-
-/* If true, the command identified by tuning_active_seq was applied at the
- * previous TIM10 tick and needs one synchronized F2 sample now. */
-static bool tuning_sample_due = false;
-static uint16_t tuning_active_seq = 0U;
+/* System-identification state. */
+static volatile bool sysid_active = false;
+static uint8_t sysid_motor_id = MOTOR_ID_WR;
+static float sysid_duty = 0.0f;
+static uint16_t sysid_command_seq = 0U;
+static uint32_t last_sysid_cmd_ms = 0U;
 
 /* UART RX parser. */
 static uint8_t uart_rx_dma_buf[RX_DMA_BUF_LEN];
-static uint8_t rx_frame[RX_FRAME_MAX_LEN];
+static uint8_t rx_frame[UART_FRAME_MAX_LEN];
 static uint8_t rx_index = 0U;
+static uint8_t rx_payload_len = 0U;
 static uint8_t rx_expected_len = 0U;
 
 typedef enum
 {
     RX_WAIT_SOF1 = 0,
     RX_WAIT_SOF2,
-    RX_WAIT_TYPE,
+    RX_COLLECT_HEADER,
     RX_COLLECT_FRAME
 } RxParserState_t;
 
 static RxParserState_t rx_state = RX_WAIT_SOF1;
 
-/* One generic TX queue is enough for PID echoes and F2 tuning samples. */
+/* Generic TX queue for feedback, diagnostics and command responses. */
 typedef struct
 {
     uint8_t len;
-    uint8_t data[TX_FRAME_MAX_LEN];
+    uint8_t data[UART_FRAME_MAX_LEN];
 } TxPacket_t;
 
 static TxPacket_t tx_queue[TX_QUEUE_DEPTH];
 static volatile uint8_t tx_head = 0U;
 static volatile uint8_t tx_tail = 0U;
-static uint8_t tx_dma_frame[TX_FRAME_MAX_LEN];
-static volatile bool tx_busy = false;
+static uint8_t tx_dma_frame[UART_FRAME_MAX_LEN];
+static uint16_t tx_sequence = 0U;
 
 /* ============================ Prototypes ================================== */
 static uint32_t App_EnterCritical(void);
 static void App_ExitCritical(uint32_t primask);
-
 static float ClampFloat(float x, float mn, float mx);
+static bool RefWithinLimit(float value, float limit);
+static void UART_RecordInvalidFrame(void);
 
 static void PIDF_RecalcD(PIDF_t *pid);
 static void PIDF_Reset(PIDF_t *pid);
@@ -313,40 +288,59 @@ static void Motor_RecordBoundary(Motor_t *motor, uint32_t count, uint32_t timest
 static int32_t Motor_CountDifference(const Motor_t *motor,
                                      uint32_t current,
                                      uint32_t previous);
+static uint32_t Motor_ReadEncoderCount(const Motor_t *motor);
+static void Motor_ConfigureHybridRPM(Motor_t *motor,
+                                     uint8_t window_ticks,
+                                     uint8_t min_counts,
+                                     float cutoff_hz);
 static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles);
+static void Motor_UpdateRPM(Motor_t *motor, uint32_t now_cycles);
 static void Motor_ApplyOutput(Motor_t *motor, float command);
 static void Motor_ApplyDutyNormalized(Motor_t *motor, float duty);
 static void Motor_StopOutput(Motor_t *motor);
 static void Motor_ResetAllPID(void);
 
 static void DWT_TimebaseInit(void);
+static void App_WatchdogInit(void);
+static void App_WatchdogRefresh(void);
 static bool App_EstopIsActive(void);
 static void App_SetDriverEnable(bool enable);
 static void App_SafetyService(void);
-static void App_ControlUpdate(void);
-static void CV_EncoderUpdate(void);
+static void App_ZeroReferences(void);
+static void App_Disarm(void);
+static bool App_TryArm(void);
+static void Sysid_Stop(bool disarm_after);
 
-static uint8_t CRC8(const uint8_t *data, uint16_t len);
+static uint16_t CRC16_CCITT_FALSE(const uint8_t *data, uint16_t len);
 static uint16_t ReadU16LE(const uint8_t *p);
 static void WriteU16LE(uint8_t *p, uint16_t value);
+static uint32_t ReadU32LE(const uint8_t *p);
+static void WriteU32LE(uint8_t *p, uint32_t value);
+static void WriteI32LE(uint8_t *p, int32_t value);
 static float ReadFloatLE(const uint8_t *p);
 static void WriteFloatLE(uint8_t *p, float value);
-static uint8_t ExpectedRxLengthForType(uint8_t type);
+static Motor_t *MotorFromId(uint8_t motor_id);
+static int32_t EncoderCountFromId(uint8_t motor_id);
+
 static void UART_ResetParser(void);
 static void UART_ProcessByte(uint8_t b);
 static void UART_ProcessFrame(const uint8_t *frame, uint8_t len);
 static void UART_StartReceiveToIdleDMA(void);
-static bool UART_QueueFrame(const uint8_t *frame, uint8_t len);
-static void UART_QueuePIDecho(uint8_t echo_type, const PIDF_t *pid);
-static void UART_QueueNormalRPM(uint8_t type);
-static void UART_QueueTuningRPM(uint16_t seq);
+static bool UART_QueueFrameRaw(const uint8_t *frame, uint8_t len);
+static bool UART_QueuePacket(uint8_t type, uint16_t seq,
+                             const uint8_t *payload, uint8_t payload_len);
+static void UART_QueueError(uint16_t request_seq, uint8_t request_type, uint8_t code);
+static void UART_QueueFeedback(void);
+static void UART_QueueDiagnostics(uint16_t request_seq);
+static void UART_QueueSysidSample(void);
+static void UART_QueuePIDResponse(uint16_t request_seq, uint8_t motor_id, const PIDF_t *pid);
+static void UART_QueueInfoResponse(uint16_t request_seq);
 static void UART_ServiceTx(void);
-static Motor_t *MotorFromPIDSetType(uint8_t type, uint8_t *echo_type);
 
-static void Tuning_ZeroActuation(void);
-static void Tuning_ReturnToNormal(void);
-static void Tuning_ApplyPendingAtTick(void);
-static void Tuning_RunCurrentMode(void);
+static void CV_EncoderUpdate(void);
+static void App_ControlUpdate(void);
+static void App_UpdateDebugSnapshot(void);
+static void App_ConfigureAuxEncoderFilters(void);
 
 /* =========================== Utility ====================================== */
 static uint32_t App_EnterCritical(void)
@@ -374,6 +368,17 @@ static float ClampFloat(float x, float mn, float mx)
     return x;
 }
 
+static bool RefWithinLimit(float value, float limit)
+{
+    return isfinite(value) && isfinite(limit) && limit > 0.0f &&
+           fabsf(value) <= limit;
+}
+
+static void UART_RecordInvalidFrame(void)
+{
+    g_app_debug.uart_invalid_frames++;
+}
+
 /* =============================== PIDF ===================================== */
 static void PIDF_RecalcD(PIDF_t *pid)
 {
@@ -385,7 +390,6 @@ static void PIDF_RecalcD(PIDF_t *pid)
         return;
     }
 
-    /* Tustin discretization of D(s) = Kd*s / (Tf*s + 1). */
     pid->ad = ((2.0f * pid->Tf) - pid->Ts) / den;
     pid->bd = (2.0f * pid->Kd) / den;
 }
@@ -491,6 +495,7 @@ static void Motor_Init(Motor_t *motor,
     motor->motor_sign = motor_sign;
     motor->encoder_type = encoder_type;
     motor->encoder_timer = encoder_timer;
+    motor->rpm_lpf_alpha = 1.0f;
 
     motor->driver_type = driver_type;
     motor->pwm_timer = pwm_timer;
@@ -502,7 +507,6 @@ static void Motor_Init(Motor_t *motor,
     motor->in2_port = in2_port;
     motor->in2_pin = in2_pin;
 
-    /* PID output units are raw PWM timer counts, matching the old project idea. */
     const float pwm_max = (float)__HAL_TIM_GET_AUTORELOAD(pwm_timer);
 
     PIDF_Init(&motor->pid,
@@ -528,8 +532,45 @@ static int32_t Motor_CountDifference(const Motor_t *motor,
         return (int32_t)(int16_t)((uint16_t)current - (uint16_t)previous);
     }
 
-    /* 32-bit hardware counter and software counter both use modulo subtraction. */
     return (int32_t)(current - previous);
+}
+
+static uint32_t Motor_ReadEncoderCount(const Motor_t *motor)
+{
+    if (motor->encoder_type == ENC_SOFTWARE) {
+        return (uint32_t)cv_encoder_count;
+    }
+
+    if (motor->encoder_timer == NULL) {
+        return 0U;
+    }
+
+    return __HAL_TIM_GET_COUNTER(motor->encoder_timer);
+}
+
+static void Motor_ConfigureHybridRPM(Motor_t *motor,
+                                     uint8_t window_ticks,
+                                     uint8_t min_counts,
+                                     float cutoff_hz)
+{
+    if (motor == NULL) {
+        return;
+    }
+
+    motor->hybrid_rpm_enabled = true;
+    motor->rpm_window_ticks = (window_ticks > 0U) ? window_ticks : 1U;
+    motor->rpm_window_min_counts = min_counts;
+    motor->rpm_window_tick_count = 0U;
+    motor->rpm_window_initialized = false;
+    motor->rpm_lpf_initialized = false;
+
+    if (cutoff_hz > 0.0f) {
+        const float omega_ts =
+            6.28318530718f * cutoff_hz * APP_CONTROL_TS_S;
+        motor->rpm_lpf_alpha = omega_ts / (1.0f + omega_ts);
+    } else {
+        motor->rpm_lpf_alpha = 1.0f;
+    }
 }
 
 static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
@@ -538,7 +579,6 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
     uint32_t edge_time;
     uint32_t edge_sequence;
 
-    /* Keep the count/time/sequence snapshot coherent if an encoder IRQ preempts TIM10. */
     uint32_t primask = App_EnterCritical();
     edge_count = motor->mt.edge_count;
     edge_time = motor->mt.edge_time_cycles;
@@ -547,30 +587,22 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
 
     if (edge_sequence != motor->mt.prev_edge_sequence) {
         if (!motor->mt.initialized) {
-            /* First real encoder boundary: establish the M/T reference point. */
             motor->mt.prev_edge_count = edge_count;
             motor->mt.prev_edge_time_cycles = edge_time;
             motor->mt.prev_edge_sequence = edge_sequence;
             motor->mt.initialized = true;
-            motor->rpm = 0.0f;
+            motor->rpm_mt = 0.0f;
             return;
         }
 
         const int32_t delta_count =
-            Motor_CountDifference(motor,
-                                  edge_count,
-                                  motor->mt.prev_edge_count);
+            Motor_CountDifference(motor, edge_count, motor->mt.prev_edge_count);
 
         const uint32_t delta_cycles =
             edge_time - motor->mt.prev_edge_time_cycles;
 
         if (delta_cycles > 0U && delta_count != 0 && motor->counts_per_rev > 0.0f) {
-            /*
-             * M/T estimator:
-             * RPM = 60 * delta_count / (CPR * delta_time_seconds)
-             *     = 60 * HCLK * delta_count / (CPR * delta_DWT_cycles)
-             */
-            motor->rpm =
+            motor->rpm_mt =
                 motor->encoder_sign *
                 ((60.0f * (float)cpu_clock_hz * (float)delta_count) /
                  (motor->counts_per_rev * (float)delta_cycles));
@@ -582,53 +614,113 @@ static void Motor_UpdateRPM_MT(Motor_t *motor, uint32_t now_cycles)
         return;
     }
 
-    /* No new boundary: retain the last M/T speed briefly, then declare zero speed. */
     if (motor->mt.initialized) {
         const uint32_t age_cycles = now_cycles - edge_time;
         if (age_cycles >= mt_zero_timeout_cycles) {
-            motor->rpm = 0.0f;
+            motor->rpm_mt = 0.0f;
         }
+    }
+}
+
+static void Motor_UpdateRPM(Motor_t *motor, uint32_t now_cycles)
+{
+    Motor_UpdateRPM_MT(motor, now_cycles);
+
+    /* WR/WL keep the original M/T estimator with no added low-pass delay. */
+    if (!motor->hybrid_rpm_enabled) {
+        motor->rpm_raw = motor->rpm_mt;
+        motor->rpm = motor->rpm_raw;
+        return;
+    }
+
+    const uint32_t current_count = Motor_ReadEncoderCount(motor);
+
+    if (!motor->rpm_window_initialized) {
+        motor->rpm_window_prev_count = current_count;
+        motor->rpm_window_tick_count = 0U;
+        motor->rpm_window_initialized = true;
+        motor->rpm_raw = motor->rpm_mt;
+    } else {
+        motor->rpm_window_tick_count++;
+
+        if (motor->rpm_window_tick_count >= motor->rpm_window_ticks) {
+            const uint8_t elapsed_ticks = motor->rpm_window_tick_count;
+            const int32_t delta_count =
+                Motor_CountDifference(motor,
+                                      current_count,
+                                      motor->rpm_window_prev_count);
+
+            motor->rpm_window_prev_count = current_count;
+            motor->rpm_window_tick_count = 0U;
+
+            /*
+             * Count-window estimate for normal/high speed.
+             * At very low speed the count quantization is coarse, so use the
+             * latest M/T period estimate instead.
+             */
+            if (fabsf((float)delta_count) >=
+                    (float)motor->rpm_window_min_counts &&
+                motor->counts_per_rev > 0.0f) {
+                const float window_s =
+                    (float)elapsed_ticks * APP_CONTROL_TS_S;
+
+                motor->rpm_raw =
+                    motor->encoder_sign *
+                    ((60.0f * (float)delta_count) /
+                     (motor->counts_per_rev * window_s));
+            } else {
+                motor->rpm_raw = motor->rpm_mt;
+            }
+        }
+    }
+
+    if (!motor->rpm_lpf_initialized) {
+        motor->rpm = motor->rpm_raw;
+        motor->rpm_lpf_initialized = true;
+    } else {
+        motor->rpm +=
+            motor->rpm_lpf_alpha * (motor->rpm_raw - motor->rpm);
     }
 }
 
 static void Motor_ApplyOutput(Motor_t *motor, float command)
 {
     const uint32_t arr = __HAL_TIM_GET_AUTORELOAD(motor->pwm_timer);
+
+    if (!isfinite(command) || !isfinite(motor->motor_sign)) {
+        motor->last_output = 0.0f;
+        app_fault_flags |= APP_STATUS_INVALID_OUTPUT;
+        command = 0.0f;
+    }
+
     float u = command * motor->motor_sign;
 
+    if (!isfinite(u)) {
+        motor->last_output = 0.0f;
+        app_fault_flags |= APP_STATUS_INVALID_OUTPUT;
+        u = 0.0f;
+    }
+
     u = ClampFloat(u, -(float)arr, (float)arr);
+    motor->last_output = u;
 
     const uint32_t duty =
         (uint32_t)(fabsf(u) + 0.5f);
 
     if (motor->driver_type == DRIVER_BTS7960) {
         if (u > 0.0f) {
-            __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                                  motor->pwm_ch_forward,
-                                  duty);
-            __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                                  motor->pwm_ch_reverse,
-                                  0U);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, duty);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_reverse, 0U);
         } else if (u < 0.0f) {
-            __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                                  motor->pwm_ch_forward,
-                                  0U);
-            __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                                  motor->pwm_ch_reverse,
-                                  duty);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, 0U);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_reverse, duty);
         } else {
-            __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                                  motor->pwm_ch_forward,
-                                  0U);
-            __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                                  motor->pwm_ch_reverse,
-                                  0U);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, 0U);
+            __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_reverse, 0U);
         }
-
         return;
     }
 
-    /* TB6612: sign -> IN1/IN2, magnitude -> PWM. */
     if (u > 0.0f) {
         HAL_GPIO_WritePin(motor->in1_port, motor->in1_pin, GPIO_PIN_SET);
         HAL_GPIO_WritePin(motor->in2_port, motor->in2_pin, GPIO_PIN_RESET);
@@ -640,9 +732,7 @@ static void Motor_ApplyOutput(Motor_t *motor, float command)
         HAL_GPIO_WritePin(motor->in2_port, motor->in2_pin, GPIO_PIN_RESET);
     }
 
-    __HAL_TIM_SET_COMPARE(motor->pwm_timer,
-                          motor->pwm_ch_forward,
-                          duty);
+    __HAL_TIM_SET_COMPARE(motor->pwm_timer, motor->pwm_ch_forward, duty);
 }
 
 static void Motor_ApplyDutyNormalized(Motor_t *motor, float duty)
@@ -678,6 +768,64 @@ static void DWT_TimebaseInit(void)
         (cpu_clock_hz / 1000U) * APP_MT_ZERO_TIMEOUT_MS;
 }
 
+static void App_WatchdogInit(void)
+{
+#ifdef __HAL_DBGMCU_FREEZE_IWDG
+    __HAL_DBGMCU_FREEZE_IWDG();
+#endif
+
+    uint32_t reload = APP_WATCHDOG_TIMEOUT_MS;
+    if (reload == 0U) {
+        reload = 1U;
+    }
+    if (reload > 4095U) {
+        reload = 4095U;
+    }
+
+    /*
+     * STM32F4 IWDG must be started so its LSI clock is running before waiting
+     * for prescaler/reload register updates. The previous sequence waited on
+     * IWDG->SR before starting IWDG, which could leave App_Init() stuck forever
+     * while TIM10 continued to run in interrupts.
+     */
+    IWDG->KR = 0xCCCCU; /* Start IWDG / LSI. */
+    IWDG->KR = 0x5555U; /* Enable PR/RLR writes. */
+    IWDG->PR = 0x03U;   /* Prescaler /32, nominally ~1 ms/tick at 32 kHz LSI. */
+    IWDG->RLR = reload - 1U;
+
+    /* Bound the register-update wait so initialization can never deadlock. */
+    uint32_t guard = 1000000U;
+    while ((IWDG->SR != 0U) && (guard > 0U)) {
+        guard--;
+    }
+
+    IWDG->KR = 0xAAAAU; /* Reload counter. */
+    g_app_debug.watchdog_started = 1U;
+    g_app_debug.watchdog_update_timeout = (guard == 0U) ? 1U : 0U;
+}
+
+static void App_WatchdogRefresh(void)
+{
+    IWDG->KR = 0xAAAAU;
+}
+
+void App_EmergencyShutdown(void)
+{
+    TIM3->CCR1 = 0U;
+    TIM3->CCR2 = 0U;
+    TIM3->CCR3 = 0U;
+    TIM3->CCR4 = 0U;
+    TIM9->CCR1 = 0U;
+    TIM9->CCR2 = 0U;
+    TIM11->CCR1 = 0U;
+
+    GPIOB->BSRR =
+        ((uint32_t)(WR_en_Pin | WL_en_Pin | STBY_Pin |
+                    BR_in1_Pin | BR_in2_Pin | BL_in1_Pin | BL_in2_Pin) << 16U);
+    GPIOA->BSRR =
+        ((uint32_t)(CV_in1_Pin | CV_in2_Pin) << 16U);
+}
+
 static bool App_EstopIsActive(void)
 {
     const GPIO_PinState state = HAL_GPIO_ReadPin(ESTOP_GPIO_Port, ESTOP_Pin);
@@ -704,12 +852,7 @@ static void App_SafetyService(void)
     estop_active = active;
 
     if (active) {
-        motorWR.ref_rpm = 0.0f;
-        motorWL.ref_rpm = 0.0f;
-        motorBR.ref_rpm = 0.0f;
-        motorBL.ref_rpm = 0.0f;
-        motorCV.ref_rpm = 0.0f;
-
+        App_ZeroReferences();
         Motor_StopOutput(&motorWR);
         Motor_StopOutput(&motorWL);
         Motor_StopOutput(&motorBR);
@@ -717,29 +860,84 @@ static void App_SafetyService(void)
         Motor_StopOutput(&motorCV);
         App_SetDriverEnable(false);
 
+        armed = false;
+        sysid_active = false;
+        sysid_duty = 0.0f;
+
         if (!previous_estop_active) {
             Motor_ResetAllPID();
         }
-    } else if (previous_estop_active) {
-        /* ESTOP release does not restore old references; new commands are required. */
-        Motor_ResetAllPID();
-        App_SetDriverEnable(true);
     }
 
     previous_estop_active = active;
 }
 
-/* ============================== UART ====================================== */
-static uint8_t CRC8(const uint8_t *data, uint16_t len)
+static void App_ZeroReferences(void)
 {
-    uint8_t crc = 0x00U;
+    motorWR.ref_rpm = 0.0f;
+    motorWL.ref_rpm = 0.0f;
+    motorBR.ref_rpm = 0.0f;
+    motorBL.ref_rpm = 0.0f;
+    motorCV.ref_rpm = 0.0f;
+}
+
+static void App_Disarm(void)
+{
+    armed = false;
+    sysid_active = false;
+    sysid_duty = 0.0f;
+
+    App_ZeroReferences();
+    Motor_StopOutput(&motorWR);
+    Motor_StopOutput(&motorWL);
+    Motor_StopOutput(&motorBR);
+    Motor_StopOutput(&motorBL);
+    Motor_StopOutput(&motorCV);
+    Motor_ResetAllPID();
+    App_SetDriverEnable(false);
+}
+
+static bool App_TryArm(void)
+{
+    if (estop_active) {
+        return false;
+    }
+
+    App_ZeroReferences();
+    Motor_ResetAllPID();
+    comm_timeout_active = false;
+    last_setpoint_ms = HAL_GetTick();
+    armed = true;
+    App_SetDriverEnable(true);
+    return true;
+}
+
+static void Sysid_Stop(bool disarm_after)
+{
+    sysid_active = false;
+    sysid_duty = 0.0f;
+    Motor_StopOutput(&motorWR);
+    Motor_StopOutput(&motorWL);
+    Motor_StopOutput(&motorBR);
+    Motor_StopOutput(&motorBL);
+    Motor_StopOutput(&motorCV);
+
+    if (disarm_after) {
+        App_Disarm();
+    }
+}
+
+/* ============================== UART ====================================== */
+static uint16_t CRC16_CCITT_FALSE(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFFU;
 
     for (uint16_t i = 0U; i < len; ++i) {
-        crc ^= data[i];
+        crc ^= (uint16_t)data[i] << 8U;
 
         for (uint8_t bit = 0U; bit < 8U; ++bit) {
-            if ((crc & 0x80U) != 0U) {
-                crc = (uint8_t)((crc << 1U) ^ 0x07U);
+            if ((crc & 0x8000U) != 0U) {
+                crc = (uint16_t)((crc << 1U) ^ 0x1021U);
             } else {
                 crc <<= 1U;
             }
@@ -751,8 +949,7 @@ static uint8_t CRC8(const uint8_t *data, uint16_t len)
 
 static uint16_t ReadU16LE(const uint8_t *p)
 {
-    return (uint16_t)(((uint16_t)p[0]) |
-                      ((uint16_t)p[1] << 8U));
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8U));
 }
 
 static void WriteU16LE(uint8_t *p, uint16_t value)
@@ -761,14 +958,30 @@ static void WriteU16LE(uint8_t *p, uint16_t value)
     p[1] = (uint8_t)((value >> 8U) & 0xFFU);
 }
 
+static uint32_t ReadU32LE(const uint8_t *p)
+{
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8U) |
+           ((uint32_t)p[2] << 16U) |
+           ((uint32_t)p[3] << 24U);
+}
+
+static void WriteU32LE(uint8_t *p, uint32_t value)
+{
+    p[0] = (uint8_t)(value & 0xFFU);
+    p[1] = (uint8_t)((value >> 8U) & 0xFFU);
+    p[2] = (uint8_t)((value >> 16U) & 0xFFU);
+    p[3] = (uint8_t)((value >> 24U) & 0xFFU);
+}
+
+static void WriteI32LE(uint8_t *p, int32_t value)
+{
+    WriteU32LE(p, (uint32_t)value);
+}
+
 static float ReadFloatLE(const uint8_t *p)
 {
-    const uint32_t bits =
-        ((uint32_t)p[0]) |
-        ((uint32_t)p[1] << 8U) |
-        ((uint32_t)p[2] << 16U) |
-        ((uint32_t)p[3] << 24U);
-
+    const uint32_t bits = ReadU32LE(p);
     float value;
     memcpy(&value, &bits, sizeof(value));
     return value;
@@ -778,38 +991,30 @@ static void WriteFloatLE(uint8_t *p, float value)
 {
     uint32_t bits;
     memcpy(&bits, &value, sizeof(bits));
-
-    p[0] = (uint8_t)(bits & 0xFFU);
-    p[1] = (uint8_t)((bits >> 8U) & 0xFFU);
-    p[2] = (uint8_t)((bits >> 16U) & 0xFFU);
-    p[3] = (uint8_t)((bits >> 24U) & 0xFFU);
+    WriteU32LE(p, bits);
 }
 
-static uint8_t ExpectedRxLengthForType(uint8_t type)
+static Motor_t *MotorFromId(uint8_t motor_id)
 {
-    switch (type) {
-        case TYPE_TUNING_STOP:
-            return TUNING_STOP_FRAME_LEN;
+    switch (motor_id) {
+        case MOTOR_ID_WR: return &motorWR;
+        case MOTOR_ID_WL: return &motorWL;
+        case MOTOR_ID_BR: return &motorBR;
+        case MOTOR_ID_BL: return &motorBL;
+        case MOTOR_ID_CV: return &motorCV;
+        default: return NULL;
+    }
+}
 
-        case TYPE_DRIVE_REF:
-            return DRIVE_FRAME_LEN;
-
-        case TYPE_AUX_REF:
-            return AUX_FRAME_LEN;
-
-        case TYPE_PID_WR_SET:
-        case TYPE_PID_WL_SET:
-        case TYPE_PID_BR_SET:
-        case TYPE_PID_BL_SET:
-        case TYPE_PID_CV_SET:
-            return PID_FRAME_LEN;
-
-        case TYPE_SYSID_DUTY:
-        case TYPE_PID_TEST_REF:
-            return TUNING_FRAME_LEN;
-
-        default:
-            return 0U;
+static int32_t EncoderCountFromId(uint8_t motor_id)
+{
+    switch (motor_id) {
+        case MOTOR_ID_WR: return (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+        case MOTOR_ID_WL: return (int32_t)__HAL_TIM_GET_COUNTER(&htim5);
+        case MOTOR_ID_BR: return (int32_t)(int16_t)__HAL_TIM_GET_COUNTER(&htim1);
+        case MOTOR_ID_BL: return (int32_t)(int16_t)__HAL_TIM_GET_COUNTER(&htim4);
+        case MOTOR_ID_CV: return cv_encoder_count;
+        default: return 0;
     }
 }
 
@@ -817,6 +1022,7 @@ static void UART_ResetParser(void)
 {
     rx_state = RX_WAIT_SOF1;
     rx_index = 0U;
+    rx_payload_len = 0U;
     rx_expected_len = 0U;
 }
 
@@ -835,9 +1041,8 @@ static void UART_ProcessByte(uint8_t b)
             if (b == SOF2) {
                 rx_frame[1] = b;
                 rx_index = 2U;
-                rx_state = RX_WAIT_TYPE;
+                rx_state = RX_COLLECT_HEADER;
             } else if (b == SOF1) {
-                /* Allow AA AA 55 to recover without dropping the second AA. */
                 rx_frame[0] = SOF1;
                 rx_index = 1U;
             } else {
@@ -845,27 +1050,32 @@ static void UART_ProcessByte(uint8_t b)
             }
             break;
 
-        case RX_WAIT_TYPE:
-            rx_expected_len = ExpectedRxLengthForType(b);
-
-            if (rx_expected_len == 0U || rx_expected_len > sizeof(rx_frame)) {
-                if (b == SOF1) {
-                    rx_frame[0] = SOF1;
-                    rx_index = 1U;
-                    rx_state = RX_WAIT_SOF2;
-                } else {
-                    UART_ResetParser();
-                }
+        case RX_COLLECT_HEADER:
+            if (rx_index >= UART_HEADER_LEN) {
+                UART_ResetParser();
                 break;
             }
 
-            rx_frame[2] = b;
-            rx_index = 3U;
-            rx_state = RX_COLLECT_FRAME;
+            rx_frame[rx_index++] = b;
+
+            if (rx_index == UART_HEADER_LEN) {
+                rx_payload_len = rx_frame[6];
+
+                if (rx_payload_len > UART_MAX_PAYLOAD_LEN) {
+                    UART_RecordInvalidFrame();
+                    UART_ResetParser();
+                    break;
+                }
+
+                rx_expected_len =
+                    (uint8_t)(UART_HEADER_LEN + rx_payload_len + UART_CRC_LEN);
+                rx_state = RX_COLLECT_FRAME;
+            }
             break;
 
         case RX_COLLECT_FRAME:
             if (rx_index >= sizeof(rx_frame)) {
+                UART_RecordInvalidFrame();
                 UART_ResetParser();
                 break;
             }
@@ -884,162 +1094,368 @@ static void UART_ProcessByte(uint8_t b)
     }
 }
 
-static Motor_t *MotorFromPIDSetType(uint8_t type, uint8_t *echo_type)
+static bool UART_QueueFrameRaw(const uint8_t *frame, uint8_t len)
 {
-    switch (type) {
-        case TYPE_PID_WR_SET:
-            *echo_type = TYPE_PID_WR_ECHO;
-            return &motorWR;
-
-        case TYPE_PID_WL_SET:
-            *echo_type = TYPE_PID_WL_ECHO;
-            return &motorWL;
-
-        case TYPE_PID_BR_SET:
-            *echo_type = TYPE_PID_BR_ECHO;
-            return &motorBR;
-
-        case TYPE_PID_BL_SET:
-            *echo_type = TYPE_PID_BL_ECHO;
-            return &motorBL;
-
-        case TYPE_PID_CV_SET:
-            *echo_type = TYPE_PID_CV_ECHO;
-            return &motorCV;
-
-        default:
-            *echo_type = 0U;
-            return NULL;
+    if (frame == NULL || len == 0U || len > UART_FRAME_MAX_LEN) {
+        return false;
     }
+
+    uint32_t primask = App_EnterCritical();
+    const uint8_t next = (uint8_t)((tx_head + 1U) % TX_QUEUE_DEPTH);
+
+    if (next == tx_tail) {
+        g_app_debug.uart_tx_queue_drops++;
+        app_fault_flags |= APP_STATUS_TX_QUEUE_DROP_SEEN;
+        App_ExitCritical(primask);
+        return false;
+    }
+
+    tx_queue[tx_head].len = len;
+    memcpy(tx_queue[tx_head].data, frame, len);
+    tx_head = next;
+    App_ExitCritical(primask);
+    return true;
+}
+
+static bool UART_QueuePacket(uint8_t type, uint16_t seq,
+                             const uint8_t *payload, uint8_t payload_len)
+{
+    if (payload_len > UART_MAX_PAYLOAD_LEN) {
+        return false;
+    }
+
+    uint8_t frame[UART_FRAME_MAX_LEN];
+    const uint8_t len =
+        (uint8_t)(UART_HEADER_LEN + payload_len + UART_CRC_LEN);
+
+    frame[0] = SOF1;
+    frame[1] = SOF2;
+    frame[2] = APP_PROTOCOL_VERSION;
+    frame[3] = type;
+    WriteU16LE(&frame[4], seq);
+    frame[6] = payload_len;
+
+    if (payload_len > 0U && payload != NULL) {
+        memcpy(&frame[7], payload, payload_len);
+    }
+
+    const uint16_t crc =
+        CRC16_CCITT_FALSE(&frame[2], (uint16_t)(5U + payload_len));
+    WriteU16LE(&frame[7U + payload_len], crc);
+
+    return UART_QueueFrameRaw(frame, len);
+}
+
+static void UART_QueueError(uint16_t request_seq, uint8_t request_type, uint8_t code)
+{
+    uint8_t payload[2] = {request_type, code};
+    (void)UART_QueuePacket(TYPE_ERROR, request_seq, payload, sizeof(payload));
+}
+
+static void UART_QueueFeedback(void)
+{
+    uint8_t payload[50];
+    uint8_t *p = payload;
+
+    WriteU32LE(p, g_app_debug.control_tick); p += 4;
+    WriteU32LE(p, g_app_debug.status_flags); p += 4;
+    WriteU16LE(p, last_setpoint_seq); p += 2;
+
+    WriteI32LE(p, EncoderCountFromId(MOTOR_ID_WR)); p += 4;
+    WriteI32LE(p, EncoderCountFromId(MOTOR_ID_WL)); p += 4;
+    WriteI32LE(p, EncoderCountFromId(MOTOR_ID_BR)); p += 4;
+    WriteI32LE(p, EncoderCountFromId(MOTOR_ID_BL)); p += 4;
+    WriteI32LE(p, EncoderCountFromId(MOTOR_ID_CV)); p += 4;
+
+    WriteFloatLE(p, motorWR.rpm); p += 4;
+    WriteFloatLE(p, motorWL.rpm); p += 4;
+    WriteFloatLE(p, motorBR.rpm); p += 4;
+    WriteFloatLE(p, motorBL.rpm); p += 4;
+    WriteFloatLE(p, motorCV.rpm); p += 4;
+
+    (void)UART_QueuePacket(TYPE_FEEDBACK, tx_sequence++, payload, sizeof(payload));
+}
+
+static void UART_QueueDiagnostics(uint16_t request_seq)
+{
+    uint8_t payload[32];
+    uint8_t *p = payload;
+
+    WriteU32LE(p, HAL_GetTick()); p += 4;
+    WriteU32LE(p, g_app_debug.reset_flags_raw); p += 4;
+    WriteU32LE(p, g_app_debug.uart_rx_frames_ok); p += 4;
+    WriteU32LE(p, g_app_debug.uart_crc_errors); p += 4;
+    WriteU32LE(p, g_app_debug.uart_invalid_frames); p += 4;
+    WriteU32LE(p, g_app_debug.uart_errors); p += 4;
+    WriteU32LE(p, g_app_debug.uart_tx_queue_drops); p += 4;
+
+    *p++ = APP_FW_VERSION_MAJOR;
+    *p++ = APP_FW_VERSION_MINOR;
+    *p++ = APP_FW_VERSION_PATCH;
+    *p++ = APP_PROTOCOL_VERSION;
+
+    (void)UART_QueuePacket(TYPE_DIAGNOSTICS, request_seq, payload, sizeof(payload));
+}
+
+static void UART_QueueSysidSample(void)
+{
+    if (!sysid_active) {
+        return;
+    }
+
+    Motor_t *motor = MotorFromId(sysid_motor_id);
+    if (motor == NULL) {
+        return;
+    }
+
+    uint8_t payload[23];
+    uint8_t *p = payload;
+
+    WriteU16LE(p, sysid_command_seq); p += 2;
+    WriteU32LE(p, g_app_debug.control_tick); p += 4;
+    *p++ = sysid_motor_id;
+    WriteFloatLE(p, sysid_duty); p += 4;
+    WriteFloatLE(p, motor->rpm); p += 4;
+    WriteI32LE(p, EncoderCountFromId(sysid_motor_id)); p += 4;
+    WriteU32LE(p, g_app_debug.status_flags);
+
+    (void)UART_QueuePacket(TYPE_SYSID_SAMPLE, tx_sequence++, payload, sizeof(payload));
+}
+
+static void UART_QueuePIDResponse(uint16_t request_seq, uint8_t motor_id, const PIDF_t *pid)
+{
+    uint8_t payload[17];
+    payload[0] = motor_id;
+    WriteFloatLE(&payload[1], pid->Kp);
+    WriteFloatLE(&payload[5], pid->Ki);
+    WriteFloatLE(&payload[9], pid->Kd);
+    WriteFloatLE(&payload[13], pid->Tf);
+    (void)UART_QueuePacket(TYPE_PID_RESPONSE, request_seq, payload, sizeof(payload));
+}
+
+static void UART_QueueInfoResponse(uint16_t request_seq)
+{
+    const uint8_t payload[4] = {
+        APP_FW_VERSION_MAJOR,
+        APP_FW_VERSION_MINOR,
+        APP_FW_VERSION_PATCH,
+        APP_PROTOCOL_VERSION
+    };
+    (void)UART_QueuePacket(TYPE_INFO_RESPONSE, request_seq, payload, sizeof(payload));
 }
 
 static void UART_ProcessFrame(const uint8_t *frame, uint8_t len)
 {
-    if (len < TUNING_STOP_FRAME_LEN ||
-        frame[0] != SOF1 ||
-        frame[1] != SOF2) {
+    if (len < (UART_HEADER_LEN + UART_CRC_LEN) ||
+        frame[0] != SOF1 || frame[1] != SOF2) {
+        UART_RecordInvalidFrame();
         return;
     }
 
-    /* CRC is TYPE + PAYLOAD; SOF1/SOF2 and the CRC byte itself are excluded. */
-    const uint8_t received_crc = frame[len - 1U];
-    const uint8_t calculated_crc = CRC8(&frame[2], (uint16_t)(len - 3U));
+    const uint8_t version = frame[2];
+    const uint8_t type = frame[3];
+    const uint16_t seq = ReadU16LE(&frame[4]);
+    const uint8_t payload_len = frame[6];
+
+    if (len != (uint8_t)(UART_HEADER_LEN + payload_len + UART_CRC_LEN)) {
+        UART_RecordInvalidFrame();
+        return;
+    }
+
+    const uint16_t received_crc = ReadU16LE(&frame[7U + payload_len]);
+    const uint16_t calculated_crc =
+        CRC16_CCITT_FALSE(&frame[2], (uint16_t)(5U + payload_len));
 
     if (received_crc != calculated_crc) {
+        g_app_debug.uart_crc_errors++;
         return;
     }
 
-    const uint8_t type = frame[2];
-
-    /* F0: deterministic stop/return is performed at the next TIM10 boundary. */
-    if (type == TYPE_TUNING_STOP && len == TUNING_STOP_FRAME_LEN) {
-        const uint32_t primask = App_EnterCritical();
-        tuning_exit_requested = true;
-        tuning_pending_valid = false;
-        App_ExitCritical(primask);
+    if (version != APP_PROTOCOL_VERSION) {
+        UART_RecordInvalidFrame();
+        UART_QueueError(seq, type, ERROR_BAD_VERSION);
         return;
     }
 
-    /* A0/A1 are accepted only when no temporary tuning command is active/pending. */
-    if (type == TYPE_DRIVE_REF && len == DRIVE_FRAME_LEN) {
-        if (app_mode != APP_MODE_NORMAL || tuning_pending_valid) {
-            return;
-        }
+    g_app_debug.uart_rx_frames_ok++;
+    const uint8_t *payload = &frame[7];
 
-        const float wr_ref = ReadFloatLE(&frame[3]);
-        const float wl_ref = ReadFloatLE(&frame[7]);
-
-        if (!isfinite(wr_ref) || !isfinite(wl_ref)) {
-            return;
-        }
-
-        const uint32_t primask = App_EnterCritical();
-        motorWR.ref_rpm = wr_ref;
-        motorWL.ref_rpm = wl_ref;
-        last_drive_cmd_ms = HAL_GetTick();
-        comm_timeout_active = false;
-        App_ExitCritical(primask);
-        return;
-    }
-
-    if (type == TYPE_AUX_REF && len == AUX_FRAME_LEN) {
-        if (app_mode != APP_MODE_NORMAL || tuning_pending_valid) {
-            return;
-        }
-
-        const float br_ref = ReadFloatLE(&frame[3]);
-        const float bl_ref = ReadFloatLE(&frame[7]);
-        const float cv_ref = ReadFloatLE(&frame[11]);
-
-        if (!isfinite(br_ref) || !isfinite(bl_ref) || !isfinite(cv_ref)) {
-            return;
-        }
-
-        const uint32_t primask = App_EnterCritical();
-        motorBR.ref_rpm = br_ref;
-        motorBL.ref_rpm = bl_ref;
-        motorCV.ref_rpm = cv_ref;
-        App_ExitCritical(primask);
-        return;
-    }
-
-    /* F1/F3: store only the newest complete valid command for the next TIM10 tick. */
-    if ((type == TYPE_SYSID_DUTY || type == TYPE_PID_TEST_REF) &&
-        len == TUNING_FRAME_LEN) {
-
-        TuningCommand_t cmd;
-        cmd.type = type;
-        cmd.seq = ReadU16LE(&frame[3]);
-
-        for (uint8_t i = 0U; i < TUNING_MOTOR_COUNT; ++i) {
-            cmd.value[i] = ReadFloatLE(&frame[5U + (4U * i)]);
-            if (!isfinite(cmd.value[i])) {
+    switch (type) {
+        case TYPE_ARM:
+            if (payload_len != 0U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
                 return;
             }
-        }
+            if (estop_active) {
+                UART_QueueError(seq, type, ERROR_ESTOP_ACTIVE);
+                return;
+            }
+            (void)App_TryArm();
+            return;
 
-        if (type == TYPE_SYSID_DUTY) {
-            /* Reject invalid duty rather than silently changing the experiment input. */
-            for (uint8_t i = 0U; i < TUNING_MOTOR_COUNT; ++i) {
-                if (cmd.value[i] < -1.0f || cmd.value[i] > 1.0f) {
+        case TYPE_DISARM:
+            if (payload_len != 0U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            comm_timeout_active = false;
+            App_Disarm();
+            return;
+
+        case TYPE_SETPOINT:
+            if (payload_len != 20U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            if (!armed || estop_active) {
+                UART_QueueError(seq, type,
+                                estop_active ? ERROR_ESTOP_ACTIVE : ERROR_NOT_ARMED);
+                return;
+            }
+            {
+                float v[MOTOR_COUNT];
+                for (uint8_t i = 0U; i < MOTOR_COUNT; ++i) {
+                    v[i] = ReadFloatLE(&payload[4U * i]);
+                }
+
+                if (!RefWithinLimit(v[0], APP_MAX_RPM_WR) ||
+                    !RefWithinLimit(v[1], APP_MAX_RPM_WL) ||
+                    !RefWithinLimit(v[2], APP_MAX_RPM_BR) ||
+                    !RefWithinLimit(v[3], APP_MAX_RPM_BL) ||
+                    !RefWithinLimit(v[4], APP_MAX_RPM_CV)) {
+                    app_fault_flags |= APP_STATUS_INVALID_COMMAND;
+                    UART_RecordInvalidFrame();
+                    UART_QueueError(seq, type, ERROR_BAD_VALUE);
                     return;
                 }
+
+                motorWR.ref_rpm = v[0];
+                motorWL.ref_rpm = v[1];
+                motorBR.ref_rpm = v[2];
+                motorBL.ref_rpm = v[3];
+                motorCV.ref_rpm = v[4];
+                last_setpoint_ms = HAL_GetTick();
+                last_setpoint_seq = seq;
+                comm_timeout_active = false;
             }
-        }
-
-        const uint32_t primask = App_EnterCritical();
-        tuning_pending = cmd;
-        tuning_pending_valid = true;
-        tuning_exit_requested = false;
-        last_tuning_cmd_ms = HAL_GetTick();
-        App_ExitCritical(primask);
-        return;
-    }
-
-    /* PIDF updates are valid in normal, SYSID, and PID-test modes. */
-    if (len == PID_FRAME_LEN) {
-        uint8_t echo_type;
-        Motor_t *motor = MotorFromPIDSetType(type, &echo_type);
-
-        if (motor == NULL) {
             return;
-        }
 
-        const float Kp = ReadFloatLE(&frame[3]);
-        const float Ki = ReadFloatLE(&frame[7]);
-        const float Kd = ReadFloatLE(&frame[11]);
-        const float Tf = ReadFloatLE(&frame[15]);
+        case TYPE_SYSID_COMMAND:
+            if (payload_len != 5U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            if (!armed || estop_active) {
+                UART_QueueError(seq, type,
+                                estop_active ? ERROR_ESTOP_ACTIVE : ERROR_NOT_ARMED);
+                return;
+            }
+            {
+                const uint8_t motor_id = payload[0];
+                const float duty = ReadFloatLE(&payload[1]);
+                if (MotorFromId(motor_id) == NULL) {
+                    UART_QueueError(seq, type, ERROR_BAD_MOTOR);
+                    return;
+                }
+                if (!isfinite(duty) || duty < -1.0f || duty > 1.0f) {
+                    UART_QueueError(seq, type, ERROR_BAD_VALUE);
+                    return;
+                }
 
-        if (!isfinite(Kp) || !isfinite(Ki) ||
-            !isfinite(Kd) || !isfinite(Tf) || Tf < 0.0f) {
+                if (!sysid_active || sysid_motor_id != motor_id) {
+                    App_ZeroReferences();
+                    Motor_ResetAllPID();
+                    Motor_StopOutput(&motorWR);
+                    Motor_StopOutput(&motorWL);
+                    Motor_StopOutput(&motorBR);
+                    Motor_StopOutput(&motorBL);
+                    Motor_StopOutput(&motorCV);
+                }
+
+                sysid_active = true;
+                sysid_motor_id = motor_id;
+                sysid_duty = duty;
+                sysid_command_seq = seq;
+                last_sysid_cmd_ms = HAL_GetTick();
+            }
             return;
-        }
 
-        const uint32_t primask = App_EnterCritical();
-        PIDF_SetTuning(&motor->pid, Kp, Ki, Kd, Tf);
-        App_ExitCritical(primask);
+        case TYPE_SYSID_STOP:
+            if (payload_len != 0U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            Sysid_Stop(false);
+            return;
 
-        UART_QueuePIDecho(echo_type, &motor->pid);
+        case TYPE_PID_SET:
+            if (payload_len != 17U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            {
+                const uint8_t motor_id = payload[0];
+                Motor_t *motor = MotorFromId(motor_id);
+                if (motor == NULL) {
+                    UART_QueueError(seq, type, ERROR_BAD_MOTOR);
+                    return;
+                }
+
+                const float Kp = ReadFloatLE(&payload[1]);
+                const float Ki = ReadFloatLE(&payload[5]);
+                const float Kd = ReadFloatLE(&payload[9]);
+                const float Tf = ReadFloatLE(&payload[13]);
+
+                if (!isfinite(Kp) || !isfinite(Ki) || !isfinite(Kd) || !isfinite(Tf) ||
+                    Kp < 0.0f || Ki < 0.0f || Tf < 0.0f ||
+                    Kp > APP_PID_GAIN_MAX || Ki > APP_PID_GAIN_MAX ||
+                    fabsf(Kd) > APP_PID_GAIN_MAX || Tf > APP_PID_TF_MAX_S) {
+                    UART_QueueError(seq, type, ERROR_BAD_VALUE);
+                    return;
+                }
+
+                PIDF_SetTuning(&motor->pid, Kp, Ki, Kd, Tf);
+                UART_QueuePIDResponse(seq, motor_id, &motor->pid);
+            }
+            return;
+
+        case TYPE_PID_GET:
+            if (payload_len != 1U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            {
+                const uint8_t motor_id = payload[0];
+                Motor_t *motor = MotorFromId(motor_id);
+                if (motor == NULL) {
+                    UART_QueueError(seq, type, ERROR_BAD_MOTOR);
+                    return;
+                }
+                UART_QueuePIDResponse(seq, motor_id, &motor->pid);
+            }
+            return;
+
+        case TYPE_DIAGNOSTICS:
+            if (payload_len != 0U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            UART_QueueDiagnostics(seq);
+            return;
+
+        case TYPE_INFO_REQUEST:
+            if (payload_len != 0U) {
+                UART_QueueError(seq, type, ERROR_BAD_LENGTH);
+                return;
+            }
+            UART_QueueInfoResponse(seq);
+            UART_QueueDiagnostics(seq);
+            return;
+
+        default:
+            UART_RecordInvalidFrame();
+            UART_QueueError(seq, type, ERROR_BAD_VALUE);
+            return;
     }
 }
 
@@ -1052,103 +1468,12 @@ static void UART_StartReceiveToIdleDMA(void)
     if (HAL_UARTEx_ReceiveToIdle_DMA(&huart6,
                                      uart_rx_dma_buf,
                                      RX_DMA_BUF_LEN) == HAL_OK) {
-        /* IDLE/full-buffer events are sufficient; no half-transfer callback needed. */
         __HAL_DMA_DISABLE_IT(huart6.hdmarx, DMA_IT_HT);
     }
 }
 
-static bool UART_QueueFrame(const uint8_t *frame, uint8_t len)
-{
-    if (frame == NULL || len == 0U || len > TX_FRAME_MAX_LEN) {
-        return false;
-    }
-
-    uint32_t primask = App_EnterCritical();
-    const uint8_t next = (uint8_t)((tx_head + 1U) % TX_QUEUE_DEPTH);
-
-    if (next == tx_tail) {
-        App_ExitCritical(primask);
-        return false;
-    }
-
-    tx_queue[tx_head].len = len;
-    memcpy(tx_queue[tx_head].data, frame, len);
-    tx_head = next;
-
-    App_ExitCritical(primask);
-    return true;
-}
-
-static void UART_QueuePIDecho(uint8_t echo_type, const PIDF_t *pid)
-{
-    uint8_t frame[PID_FRAME_LEN];
-
-    frame[0] = SOF1;
-    frame[1] = SOF2;
-    frame[2] = echo_type;
-
-    WriteFloatLE(&frame[3],  pid->Kp);
-    WriteFloatLE(&frame[7],  pid->Ki);
-    WriteFloatLE(&frame[11], pid->Kd);
-    WriteFloatLE(&frame[15], pid->Tf);
-
-    frame[PID_FRAME_LEN - 1U] =
-        CRC8(&frame[2], PID_FRAME_LEN - 3U);
-
-    (void)UART_QueueFrame(frame, PID_FRAME_LEN);
-}
-
-static void UART_QueueNormalRPM(uint8_t type)
-{
-    if (type != TYPE_RPM_NORMAL && type != TYPE_RPM_ESTOP) {
-        return;
-    }
-
-    uint8_t frame[NORMAL_RPM_FRAME_LEN];
-
-    frame[0] = SOF1;
-    frame[1] = SOF2;
-    frame[2] = type;
-
-    WriteFloatLE(&frame[3],  motorWR.rpm);
-    WriteFloatLE(&frame[7],  motorWL.rpm);
-    WriteFloatLE(&frame[11], motorBR.rpm);
-    WriteFloatLE(&frame[15], motorBL.rpm);
-    WriteFloatLE(&frame[19], motorCV.rpm);
-
-    frame[NORMAL_RPM_FRAME_LEN - 1U] =
-        CRC8(&frame[2], NORMAL_RPM_FRAME_LEN - 3U);
-
-    (void)UART_QueueFrame(frame, NORMAL_RPM_FRAME_LEN);
-}
-
-static void UART_QueueTuningRPM(uint16_t seq)
-{
-    uint8_t frame[TUNING_FRAME_LEN];
-
-    frame[0] = SOF1;
-    frame[1] = SOF2;
-    frame[2] = TYPE_TUNING_RPM;
-    WriteU16LE(&frame[3], seq);
-
-    WriteFloatLE(&frame[5],  motorWR.rpm);
-    WriteFloatLE(&frame[9],  motorWL.rpm);
-    WriteFloatLE(&frame[13], motorBR.rpm);
-    WriteFloatLE(&frame[17], motorBL.rpm);
-    WriteFloatLE(&frame[21], motorCV.rpm);
-
-    frame[TUNING_FRAME_LEN - 1U] =
-        CRC8(&frame[2], TUNING_FRAME_LEN - 3U);
-
-    (void)UART_QueueFrame(frame, TUNING_FRAME_LEN);
-}
-
 static void UART_ServiceTx(void)
 {
-    if (tx_busy || huart6.hdmatx == NULL) {
-        return;
-    }
-
     uint8_t tail;
     uint8_t len;
 
@@ -1162,14 +1487,26 @@ static void UART_ServiceTx(void)
     tail = tx_tail;
     len = tx_queue[tail].len;
     memcpy(tx_dma_frame, tx_queue[tail].data, len);
-
     App_ExitCritical(primask);
 
-    if (HAL_UART_Transmit_DMA(&huart6, tx_dma_frame, len) == HAL_OK) {
+    /*
+     * TX intentionally uses polling rather than DMA.
+     *
+     * At 1 Mbaud a maximum-size protocol frame takes < 1 ms on the wire.
+     * This runs only from App_Task() in the main loop, so TIM10 and encoder
+     * interrupts still preempt it. RX remains DMA based.
+     */
+    const HAL_StatusTypeDef status =
+        HAL_UART_Transmit(&huart6, tx_dma_frame, len, 2U);
+
+    if (status == HAL_OK) {
         primask = App_EnterCritical();
         tx_tail = (uint8_t)((tail + 1U) % TX_QUEUE_DEPTH);
-        tx_busy = true;
+        g_app_debug.uart_tx_frames_ok++;
         App_ExitCritical(primask);
+    } else {
+        g_app_debug.uart_tx_errors++;
+        app_fault_flags |= APP_STATUS_UART_ERROR_SEEN;
     }
 }
 
@@ -1218,197 +1555,108 @@ static void CV_EncoderUpdate(void)
         (HAL_GPIO_ReadPin(CV_encB_GPIO_Port, CV_encB_Pin) == GPIO_PIN_SET) ? 1U : 0U;
 
     const uint8_t current_ab = (uint8_t)((a << 1U) | b);
+
+    if (current_ab == old_ab) {
+        return;
+    }
+
     const uint8_t index = (uint8_t)((old_ab << 2U) | current_ab);
     const int8_t step = quad_table[index];
 
-    if (step != 0) {
-        cv_encoder_count += step;
-
-        /* Match hardware M/T boundary style: timestamp only A-channel rising edges. */
-        if (old_a == 0U && a == 1U) {
-            Motor_RecordBoundary(&motorCV,
-                                 (uint32_t)cv_encoder_count,
-                                 DWT->CYCCNT);
-        }
+    /*
+     * A two-bit jump is not a valid quadrature transition. Do not advance the
+     * decoder state on a rejected transition; doing so would turn a short
+     * glitch into a later false count.
+     */
+    if (step == 0) {
+        g_app_debug.cv_deglitch_rejects++;
+        return;
     }
 
+    const uint32_t now = DWT->CYCCNT;
+
+    if (cv_last_accepted_edge_cycles != 0U &&
+        (now - cv_last_accepted_edge_cycles) < cv_min_edge_cycles) {
+        g_app_debug.cv_deglitch_rejects++;
+        return;
+    }
+
+    cv_last_accepted_edge_cycles = now;
+    cv_encoder_count += step;
     cv_prev_ab = current_ab;
+
+    /* Match hardware M/T boundary style: timestamp only A-channel rising edges. */
+    if (old_a == 0U && a == 1U) {
+        Motor_RecordBoundary(&motorCV,
+                             (uint32_t)cv_encoder_count,
+                             now);
+    }
 }
 
 /* =========================== Control loop ================================= */
-static void Tuning_ZeroActuation(void)
-{
-    motorWR.ref_rpm = 0.0f;
-    motorWL.ref_rpm = 0.0f;
-    motorBR.ref_rpm = 0.0f;
-    motorBL.ref_rpm = 0.0f;
-    motorCV.ref_rpm = 0.0f;
-
-    for (uint8_t i = 0U; i < TUNING_MOTOR_COUNT; ++i) {
-        sysid_duty[i] = 0.0f;
-    }
-
-    Motor_StopOutput(&motorWR);
-    Motor_StopOutput(&motorWL);
-    Motor_StopOutput(&motorBR);
-    Motor_StopOutput(&motorBL);
-    Motor_StopOutput(&motorCV);
-
-    Motor_ResetAllPID();
-}
-
-static void Tuning_ReturnToNormal(void)
-{
-    Tuning_ZeroActuation();
-
-    app_mode = APP_MODE_NORMAL;
-    tuning_pending_valid = false;
-    tuning_exit_requested = false;
-    tuning_sample_due = false;
-    tuning_active_seq = 0U;
-
-    /* Normal mode starts from zero and requires a fresh A0 heartbeat to move. */
-    last_drive_cmd_ms = HAL_GetTick();
-    comm_timeout_active = true;
-}
-
-static void Tuning_ApplyPendingAtTick(void)
-{
-    TuningCommand_t cmd;
-    bool have_pending = false;
-
-    uint32_t primask = App_EnterCritical();
-    if (tuning_pending_valid) {
-        cmd = tuning_pending;
-        tuning_pending_valid = false;
-        have_pending = true;
-    }
-    App_ExitCritical(primask);
-
-    if (!have_pending) {
-        return;
-    }
-
-    const AppMode_t requested_mode =
-        (cmd.type == TYPE_SYSID_DUTY) ? APP_MODE_SYSID : APP_MODE_PID_TEST;
-
-    if (app_mode != requested_mode) {
-        /* Mode changes never inherit duty, reference, or PID internal state. */
-        Tuning_ZeroActuation();
-        app_mode = requested_mode;
-    }
-
-    if (requested_mode == APP_MODE_SYSID) {
-        for (uint8_t i = 0U; i < TUNING_MOTOR_COUNT; ++i) {
-            sysid_duty[i] = cmd.value[i];
-        }
-    } else {
-        motorWR.ref_rpm = cmd.value[0];
-        motorWL.ref_rpm = cmd.value[1];
-        motorBR.ref_rpm = cmd.value[2];
-        motorBL.ref_rpm = cmd.value[3];
-        motorCV.ref_rpm = cmd.value[4];
-    }
-
-    /* This SEQ will be sampled on the NEXT TIM10 boundary. */
-    tuning_active_seq = cmd.seq;
-    tuning_sample_due = true;
-}
-
-static void Tuning_RunCurrentMode(void)
-{
-    if (app_mode == APP_MODE_SYSID) {
-        Motor_ApplyDutyNormalized(&motorWR, sysid_duty[0]);
-        Motor_ApplyDutyNormalized(&motorWL, sysid_duty[1]);
-        Motor_ApplyDutyNormalized(&motorBR, sysid_duty[2]);
-        Motor_ApplyDutyNormalized(&motorBL, sysid_duty[3]);
-        Motor_ApplyDutyNormalized(&motorCV, sysid_duty[4]);
-        return;
-    }
-
-    if (app_mode == APP_MODE_PID_TEST) {
-        const float u_wr = PIDF_Step(&motorWR.pid, motorWR.ref_rpm, motorWR.rpm);
-        const float u_wl = PIDF_Step(&motorWL.pid, motorWL.ref_rpm, motorWL.rpm);
-        const float u_br = PIDF_Step(&motorBR.pid, motorBR.ref_rpm, motorBR.rpm);
-        const float u_bl = PIDF_Step(&motorBL.pid, motorBL.ref_rpm, motorBL.rpm);
-        const float u_cv = PIDF_Step(&motorCV.pid, motorCV.ref_rpm, motorCV.rpm);
-
-        Motor_ApplyOutput(&motorWR, u_wr);
-        Motor_ApplyOutput(&motorWL, u_wl);
-        Motor_ApplyOutput(&motorBR, u_br);
-        Motor_ApplyOutput(&motorBL, u_bl);
-        Motor_ApplyOutput(&motorCV, u_cv);
-    }
-}
-
 static void App_ControlUpdate(void)
 {
+    g_app_debug.control_tick++;
+
     App_SafetyService();
 
     const uint32_t now_cycles = DWT->CYCCNT;
-
-    /* M/T RPM measurement always runs, independent of control mode. */
-    Motor_UpdateRPM_MT(&motorWR, now_cycles);
-    Motor_UpdateRPM_MT(&motorWL, now_cycles);
-    Motor_UpdateRPM_MT(&motorBR, now_cycles);
-    Motor_UpdateRPM_MT(&motorBL, now_cycles);
-    Motor_UpdateRPM_MT(&motorCV, now_cycles);
+    Motor_UpdateRPM(&motorWR, now_cycles);
+    Motor_UpdateRPM(&motorWL, now_cycles);
+    Motor_UpdateRPM(&motorBR, now_cycles);
+    Motor_UpdateRPM(&motorBL, now_cycles);
+    Motor_UpdateRPM(&motorCV, now_cycles);
 
     if (estop_active) {
-        /* ESTOP aborts a tuning session. UART is never part of the safety chain. */
-        app_mode = APP_MODE_NORMAL;
-        tuning_pending_valid = false;
-        tuning_exit_requested = false;
-        tuning_sample_due = false;
-
-        /* Preserve normal telemetry semantics: TYPE 0x00 reports ESTOP active. */
-        UART_QueueNormalRPM(TYPE_RPM_ESTOP);
+        App_UpdateDebugSnapshot();
+        UART_QueueFeedback();
         return;
     }
 
-    if (tuning_exit_requested) {
-        Tuning_ReturnToNormal();
+    if (!armed) {
+        App_ZeroReferences();
+        Motor_StopOutput(&motorWR);
+        Motor_StopOutput(&motorWL);
+        Motor_StopOutput(&motorBR);
+        Motor_StopOutput(&motorBL);
+        Motor_StopOutput(&motorCV);
+        App_UpdateDebugSnapshot();
+        UART_QueueFeedback();
         return;
     }
 
-    if (app_mode != APP_MODE_NORMAL) {
-        if ((HAL_GetTick() - last_tuning_cmd_ms) > APP_TUNING_TIMEOUT_MS) {
-            Tuning_ReturnToNormal();
+    if (sysid_active) {
+        if ((HAL_GetTick() - last_sysid_cmd_ms) > APP_TUNING_TIMEOUT_MS) {
+            comm_timeout_active = true;
+            Sysid_Stop(true);
+            App_UpdateDebugSnapshot();
+            UART_QueueFeedback();
             return;
         }
 
-        /*
-         * The RPM measured above belongs to the command that was active over
-         * the preceding control interval. Return it before promoting a new command.
-         */
-        if (tuning_sample_due) {
-            UART_QueueTuningRPM(tuning_active_seq);
-            tuning_sample_due = false;
+        Motor_StopOutput(&motorWR);
+        Motor_StopOutput(&motorWL);
+        Motor_StopOutput(&motorBR);
+        Motor_StopOutput(&motorBL);
+        Motor_StopOutput(&motorCV);
+
+        Motor_t *motor = MotorFromId(sysid_motor_id);
+        if (motor != NULL) {
+            Motor_ApplyDutyNormalized(motor, sysid_duty);
         }
-    }
 
-    /* A pending F1/F3 can enter tuning directly from normal mode or update it. */
-    Tuning_ApplyPendingAtTick();
-
-    if (app_mode != APP_MODE_NORMAL) {
-        Tuning_RunCurrentMode();
+        App_UpdateDebugSnapshot();
+        UART_QueueSysidSample();
+        UART_QueueFeedback();
         return;
     }
 
-    /* ---------------------------- Normal mode ----------------------------- */
-    if ((HAL_GetTick() - last_drive_cmd_ms) > APP_COMM_TIMEOUT_MS) {
-        /* A0 is the normal-mode heartbeat. Never allow A1-only traffic to keep
-         * an old command alive after the heartbeat has expired. */
-        motorWR.ref_rpm = 0.0f;
-        motorWL.ref_rpm = 0.0f;
-        motorBR.ref_rpm = 0.0f;
-        motorBL.ref_rpm = 0.0f;
-        motorCV.ref_rpm = 0.0f;
-
-        if (!comm_timeout_active) {
-            Motor_ResetAllPID();
-            comm_timeout_active = true;
-        }
+    if ((HAL_GetTick() - last_setpoint_ms) > APP_COMM_TIMEOUT_MS) {
+        comm_timeout_active = true;
+        App_Disarm();
+        App_UpdateDebugSnapshot();
+        UART_QueueFeedback();
+        return;
     }
 
     const float u_wr = PIDF_Step(&motorWR.pid, motorWR.ref_rpm, motorWR.rpm);
@@ -1423,10 +1671,82 @@ static void App_ControlUpdate(void)
     Motor_ApplyOutput(&motorBL, u_bl);
     Motor_ApplyOutput(&motorCV, u_cv);
 
-    /* Normal mode continuously reports all five measured RPM values at the
-     * 100 Hz TIM10 control rate. F1/F3 tuning mode suppresses this stream and
-     * uses synchronized F2 packets instead. */
-    UART_QueueNormalRPM(TYPE_RPM_NORMAL);
+    App_UpdateDebugSnapshot();
+    UART_QueueFeedback();
+}
+
+static void App_ConfigureAuxEncoderFilters(void)
+{
+    /*
+     * TIM1 = BR, TIM4 = BL.
+     * Apply the encoder input filter after CubeMX initialization so this
+     * protection remains active even if generated main.c is regenerated.
+     *
+     * Both channels use the same ICxF field in CCMR1 while in encoder mode.
+     */
+    MODIFY_REG(htim1.Instance->CCMR1,
+               TIM_CCMR1_IC1F | TIM_CCMR1_IC2F,
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC1F_Pos) |
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC2F_Pos));
+
+    MODIFY_REG(htim4.Instance->CCMR1,
+               TIM_CCMR1_IC1F | TIM_CCMR1_IC2F,
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC1F_Pos) |
+               ((uint32_t)APP_AUX_ENCODER_TIM_FILTER << TIM_CCMR1_IC2F_Pos));
+}
+
+static void App_UpdateDebugSnapshot(void)
+{
+    uint32_t status = app_fault_flags;
+
+    if (armed) {
+        status |= APP_STATUS_ARMED;
+    }
+    if (estop_active) {
+        status |= APP_STATUS_ESTOP;
+    }
+    if (comm_timeout_active) {
+        status |= APP_STATUS_COMM_TIMEOUT;
+    }
+    if (sysid_active) {
+        status |= APP_STATUS_SYSID_MODE;
+    }
+
+    g_app_debug.status_flags = status;
+    g_app_debug.last_setpoint_seq = last_setpoint_seq;
+    g_app_debug.sysid_command_seq = sysid_command_seq;
+    g_app_debug.sysid_motor_id = sysid_motor_id;
+    g_app_debug.sysid_duty = sysid_duty;
+
+    g_app_debug.encoder_count_wr = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+    g_app_debug.encoder_count_wl = (int32_t)__HAL_TIM_GET_COUNTER(&htim5);
+    g_app_debug.encoder_count_br = (int32_t)(int16_t)__HAL_TIM_GET_COUNTER(&htim1);
+    g_app_debug.encoder_count_bl = (int32_t)(int16_t)__HAL_TIM_GET_COUNTER(&htim4);
+    g_app_debug.encoder_count_cv = cv_encoder_count;
+
+    g_app_debug.ref_rpm_wr = motorWR.ref_rpm;
+    g_app_debug.ref_rpm_wl = motorWL.ref_rpm;
+    g_app_debug.ref_rpm_br = motorBR.ref_rpm;
+    g_app_debug.ref_rpm_bl = motorBL.ref_rpm;
+    g_app_debug.ref_rpm_cv = motorCV.ref_rpm;
+
+    g_app_debug.rpm_wr = motorWR.rpm;
+    g_app_debug.rpm_wl = motorWL.rpm;
+    g_app_debug.rpm_br = motorBR.rpm;
+    g_app_debug.rpm_bl = motorBL.rpm;
+    g_app_debug.rpm_cv = motorCV.rpm;
+
+    g_app_debug.rpm_raw_wr = motorWR.rpm_raw;
+    g_app_debug.rpm_raw_wl = motorWL.rpm_raw;
+    g_app_debug.rpm_raw_br = motorBR.rpm_raw;
+    g_app_debug.rpm_raw_bl = motorBL.rpm_raw;
+    g_app_debug.rpm_raw_cv = motorCV.rpm_raw;
+
+    g_app_debug.output_wr = motorWR.last_output;
+    g_app_debug.output_wl = motorWL.last_output;
+    g_app_debug.output_br = motorBR.last_output;
+    g_app_debug.output_bl = motorBL.last_output;
+    g_app_debug.output_cv = motorCV.last_output;
 }
 
 /* ============================== Public ==================================== */
@@ -1434,8 +1754,19 @@ void App_Init(void)
 {
     DWT_TimebaseInit();
 
+    cv_min_edge_cycles =
+        (uint32_t)(((uint64_t)cpu_clock_hz * APP_CV_MIN_EDGE_US) / 1000000ULL);
+    cv_last_accepted_edge_cycles = 0U;
+    g_app_debug.cv_deglitch_rejects = 0U;
+
+    App_ConfigureAuxEncoderFilters();
+
+    /* Preserve the reset cause for Live Expression inspection, then clear it. */
+    g_app_debug.reset_flags_raw = RCC->CSR;
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+
     /*
-     * The uploaded CubeMX file still initializes USART6 at 115200.
+     * USART6 is expected to run at the protocol baud rate.
      * Enforce the agreed 1 Mbaud here; this custom file is not overwritten by CubeMX.
      */
     if (huart6.Init.BaudRate != APP_UART_BAUD) {
@@ -1528,6 +1859,24 @@ void App_Init(void)
                APP_PID_CV_KD,
                APP_PID_CV_TF);
 
+    /*
+     * WR/WL keep M/T only.
+     * BR/BL/CV use 20 ms count-window speed above the low-speed threshold,
+     * fall back to M/T at very low speed, then use a small IIR low-pass.
+     */
+    Motor_ConfigureHybridRPM(&motorBR,
+                             APP_AUX_RPM_WINDOW_TICKS,
+                             APP_AUX_RPM_WINDOW_MIN_COUNTS,
+                             APP_BRBL_RPM_LPF_HZ);
+    Motor_ConfigureHybridRPM(&motorBL,
+                             APP_AUX_RPM_WINDOW_TICKS,
+                             APP_AUX_RPM_WINDOW_MIN_COUNTS,
+                             APP_BRBL_RPM_LPF_HZ);
+    Motor_ConfigureHybridRPM(&motorCV,
+                             APP_AUX_RPM_WINDOW_TICKS,
+                             APP_AUX_RPM_WINDOW_MIN_COUNTS,
+                             APP_CV_RPM_LPF_HZ);
+
     /* Start hardware encoder counters without enabling both CC1/CC2 interrupts. */
     if (HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL) != HAL_OK) {
         Error_Handler();
@@ -1586,32 +1935,58 @@ void App_Init(void)
 
     estop_active = App_EstopIsActive();
     previous_estop_active = estop_active;
-    App_SetDriverEnable(!estop_active);
 
-    last_drive_cmd_ms = HAL_GetTick();
-    comm_timeout_active = false;
+    /* Boot is always DISARMED regardless of ESTOP state. */
+    armed = false;
+    App_SetDriverEnable(false);
+    last_setpoint_ms = HAL_GetTick();
+    comm_timeout_active = true;
+    last_setpoint_seq = 0U;
 
-    app_mode = APP_MODE_NORMAL;
-    tuning_pending_valid = false;
-    tuning_exit_requested = false;
-    tuning_sample_due = false;
-    last_tuning_cmd_ms = HAL_GetTick();
+    sysid_active = false;
+    sysid_motor_id = MOTOR_ID_WR;
+    sysid_duty = 0.0f;
+    sysid_command_seq = 0U;
+    last_sysid_cmd_ms = HAL_GetTick();
 
     UART_StartReceiveToIdleDMA();
+
+    /*
+     * Start the watchdog before TIM10 so App_Init cannot leave the controller
+     * ISR running while main() is still blocked in watchdog initialization.
+     */
+    App_WatchdogInit();
 
     /* TIM10 is the 100 Hz controller scheduler. */
     if (HAL_TIM_Base_Start_IT(&htim10) != HAL_OK) {
         Error_Handler();
     }
+
+    App_UpdateDebugSnapshot();
 }
 
 void App_Task(void)
 {
+    static uint32_t last_watchdog_control_tick = 0U;
+
+    g_app_debug.main_loop_count++;
+
     /* Fast local ESTOP polling in addition to the 100 Hz control callback. */
     App_SafetyService();
 
     /* Non-time-critical UART TX is kept outside the TIM10 ISR. */
     UART_ServiceTx();
+
+    /*
+     * Refresh the independent watchdog only if the control ISR is alive.
+     * This makes the watchdog cover both a stalled main loop and a stalled
+     * control scheduler.
+     */
+    const uint32_t tick = g_app_debug.control_tick;
+    if (tick != last_watchdog_control_tick) {
+        last_watchdog_control_tick = tick;
+        App_WatchdogRefresh();
+    }
 }
 
 /* ============================ HAL callbacks =============================== */
@@ -1646,20 +2021,16 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     UART_StartReceiveToIdleDMA();
 }
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART6) {
-        tx_busy = false;
-    }
-}
-
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance != USART6) {
         return;
     }
 
+    g_app_debug.uart_errors++;
+    app_fault_flags |= APP_STATUS_UART_ERROR_SEEN;
+
     HAL_UART_DMAStop(&huart6);
-    tx_busy = false;
+    UART_ResetParser();
     UART_StartReceiveToIdleDMA();
 }

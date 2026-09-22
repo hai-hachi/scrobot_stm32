@@ -1,147 +1,122 @@
-# System identification workflow
+# System identification and PIDF tuning
 
-The firmware already contains a temporary open-loop mode intended for identifying the motor dynamics before final PID tuning.
+System identification uses UART protocol v2 and the dedicated one-motor SYSID
+mode. Acquisition runs on the Raspberry Pi so Wi-Fi/SSH timing does not enter
+the 100 Hz control/sample loop.
 
-## Preconditions
-
-Before collecting identification data:
-
-1. Verify the E-stop input and polarity.
-2. Secure the robot or lift the driven wheel off the ground for initial tests.
-3. Verify motor direction.
-4. Verify encoder direction.
-5. Measure and correct the actual encoder counts per output-shaft revolution.
-6. Verify that reported RPM is physically correct.
-7. Confirm F0 and communication-loss behavior stop the motor.
-
-Do not use the current CPR constants as final values until they have been measured. The source currently marks them as placeholders.
-
-## Relevant firmware timing
-
-- control period: 10 ms
-- control frequency: 100 Hz
-- F1/F3 commands are applied at TIM10 boundaries
-- F2 is associated with the command using a uint16 sequence number
-
-## F1 open-loop command
-
-F1 applies normalized duty directly:
+## Architecture
 
 ```text
--1.0 <= duty <= 1.0
+Laptop / PC
+  MATLAB + file storage
+        |
+       SCP / SSH
+        |
+        v
+Raspberry Pi 4B
+  Python host tools
+        |
+  UART 1 Mbaud
+        |
+        v
+STM32F411CEU6
+  100 Hz control loop
 ```
 
-For initial tests, command only one motor while setting all other motor duties to zero.
+## Current calibrated motor data
 
-Example conceptual command:
+| Motor | Encoder CPR | Max closed-loop reference | Nominal working speed |
+|---|---:|---:|---:|
+| WR | 3264 | 100 RPM | 95 RPM |
+| WL | 3264 | 100 RPM | 95 RPM |
+| BR | 400 | 400 RPM | 390 RPM |
+| BL | 400 | 400 RPM | 390 RPM |
+| CV | 3960 | 80 RPM | 80 RPM |
+
+These values must stay aligned with `Core/Inc/app_config.h`.
+
+## Speed-estimation filtering
+
+- WR/WL use the M/T speed estimator.
+- BR/BL use timer encoder input filtering plus the hybrid count-window/M/T
+  estimator and a 10 Hz RPM low-pass filter.
+- CV uses software quadrature deglitching, the hybrid count-window/M/T
+  estimator, and a 7 Hz RPM low-pass filter.
+- SYSID and normal feedback report the same final RPM signal used by PIDF.
+
+If the estimator/filter configuration changes, repeat the multistep
+identification and PIDF tuning because the measured plant has changed.
+
+## Recommended sequence
+
+1. Verify E-stop, motor direction, encoder sign, and calibrated CPR.
+2. Run a low-duty fixed motor test.
+3. Run a bidirectional sweep to characterize deadband, hysteresis, and
+   saturation.
+4. Run the bidirectional multistep experiment for transfer-function
+   identification.
+5. Copy the CSV files from the Pi to the PC.
+6. Identify continuous/discrete 1P0Z and 2P1Z models in MATLAB.
+7. Tune PIDF using the selected/overridden model.
+8. Copy `tools/raw_data/pidf_autotune_results.csv` to the Pi and load it with
+   `pid_update.py`.
+9. Validate each motor at its nominal working speed with `pid_validate.py`.
+10. Copy validation CSV files back to the PC and inspect them with
+    `pidf_validation_all.m`.
+11. After hardware validation, copy the accepted PIDF values into
+    `app_config.h` so they become the reset defaults.
+
+The STM32 boots DISARMED. SYSID requires ARM. A lost SYSID heartbeat for
+500 ms stops the experiment and disarms the controller.
+
+## Identification input/output
+
+The identified SISO plant is:
 
 ```text
-SEQ = 25
-WR = 0.15
-WL = 0
-BR = 0
-BL = 0
-CV = 0
+input  = PWM duty command [%]
+output = measured motor speed [RPM]
+Ts     = 0.01 s
 ```
 
-The following F2 response with the same sequence number contains the synchronized measured RPM.
-
-## Recommended identification sequence
-
-### 1. Encoder calibration
-
-Rotate one output shaft through a known number of revolutions and determine the actual timer-count change.
-
-Calculate:
+CSV columns are:
 
 ```text
-CPR = absolute encoder count change / mechanical revolutions
-```
-
-Repeat in both directions.
-
-### 2. Direction check
-
-Apply a small positive duty and verify:
-
-- mechanical positive direction
-- encoder RPM sign
-- configured `APP_MOTOR_SIGN_*`
-- configured `APP_ENCODER_SIGN_*`
-
-### 3. Deadband sweep
-
-Increase duty slowly from zero in both directions.
-
-Record:
-
-- command duty
-- measured RPM
-- first duty where repeatable motion begins
-
-This gives the positive and negative deadband.
-
-### 4. Static duty-speed map
-
-After the deadband is known, test several steady duty values.
-
-For each value:
-
-1. hold duty long enough to approach steady state
-2. record measured RPM
-3. repeat in both directions
-
-This checks approximate linearity and asymmetry.
-
-### 5. Dynamic step tests
-
-Apply several safe duty steps and log the synchronized F2 data.
-
-Typical first-order model:
-
-```text
-G(s) = K / (tau*s + 1)
-```
-
-Possible identified quantities:
-
-- deadband
-- static gain K
-- time constant tau
-- transport delay, if significant
-- positive/negative asymmetry
-
-### 6. Closed-loop validation
-
-After choosing initial PID gains, use F3 to send RPM references and use F2 to evaluate:
-
-- rise time
-- settling time
-- overshoot
-- steady-state error
-- saturation behavior
-
-## Data to log on the Pi
-
-At minimum:
-
-```text
-timestamp
-sequence
+host_time_s
+control_tick
+frame_seq
+command_seq
 motor
-command_mode
-command
-measured_rpm
+command_duty
+rpm
+encoder_count
+status
 ```
 
-Useful additional fields:
+The STM32 `control_tick` is the preferred identification timebase.
+
+## PIDF implementation match
+
+The STM32 controller uses a 10 ms sample period.
+
+The integral state is trapezoidal:
 
 ```text
-battery_voltage
-estop_state
-communication_state
+I[k] = I[k-1] + Ts/2 * (e[k] + e[k-1])
 ```
 
-## Safety recommendation
+The filtered derivative uses the corresponding bilinear/Tustin form:
 
-Start with low command levels and one wheel at a time. Do not begin with full-duty steps on the assembled mobile robot.
+```text
+D[k] = ad*D[k-1] + bd*(e[k] - e[k-1])
+ad = (2*Tf - Ts)/(2*Tf + Ts)
+bd = 2*Kd/(2*Tf + Ts)
+```
+
+The MATLAB autotune script therefore uses a discrete PIDF template with
+`IFormula='Trapezoidal'` and `DFormula='Trapezoidal'`. If a continuous
+identified plant is selected, the current tuning workflow discretizes that
+plant with the bilinear/Tustin transform at 0.01 s before tuning.
+
+For the exact commands used at every stage, including PC/Pi SCP commands, see
+[tuning_workflow.md](tuning_workflow.md).

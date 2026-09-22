@@ -34,3 +34,8 @@ desktop.ini
 *.bak
 *.swp
 *~
+
+
+# Runtime acquisition / tuning outputs
+tools/data/
+tools/raw_data/

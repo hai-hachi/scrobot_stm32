@@ -1,77 +1,154 @@
 #ifndef APP_CONFIG_H
 #define APP_CONFIG_H
 
+/* ---------------- Firmware / protocol ---------------- */
+#define APP_FW_VERSION_MAJOR              0U
+#define APP_FW_VERSION_MINOR              2U
+#define APP_FW_VERSION_PATCH              1U
+#define APP_PROTOCOL_VERSION              2U
+
 /* ---------------- Control loop ---------------- */
-#define APP_CONTROL_TS_S                 0.010f      /* TIM10 = 100 Hz */
-#define APP_COMM_TIMEOUT_MS              200U        /* WR/WL command heartbeat */
-#define APP_TUNING_TIMEOUT_MS            20000U        /* F1/F3 watchdog; timeout returns NORMAL */
+#define APP_CONTROL_TS_S                  0.010f      /* TIM10 = 100 Hz */
+#define APP_COMM_TIMEOUT_MS               200U        /* A0 drive-command heartbeat */
+
+/*
+ * F1/F3 commands must be refreshed while tuning is active.
+ * A short timeout prevents a lost host connection from leaving an open-loop
+ * duty or PID-test reference active for a long time.
+ */
+#define APP_TUNING_TIMEOUT_MS             500U
+
+/* Independent watchdog. Refreshed only when the TIM10 control tick advances. */
+#define APP_WATCHDOG_TIMEOUT_MS           500U
 
 /*
  * M/T zero-speed timeout.
- * If no new encoder boundary is observed for this long, measured RPM is set to 0.
- * Tune this later if you need very-low-speed measurement below this threshold.
+ * At present one common value is used for all motors. This can be separated
+ * per motor later if low-speed testing shows a need.
  */
-#define APP_MT_ZERO_TIMEOUT_MS           250U
-
-/* USART protocol target baud rate. App_Init enforces this even if CubeMX still says 115200. */
-#define APP_UART_BAUD                    1000000U
+#define APP_MT_ZERO_TIMEOUT_MS            250U
 
 /*
- * Encoder counts per mechanical output-shaft revolution.
- * IMPORTANT: use the ACTUAL TIMx->CNT counts/rev in TI12 encoder mode.
- * The values below are placeholders copied from the previous project only.
+ * Auxiliary encoder input filtering.
+ *
+ * BR/BL use STM32 timer encoder mode. Filter 15 is the strongest timer
+ * digital input filter and rejects short glitches while remaining far faster
+ * than the expected encoder edge spacing.
+ *
+ * CV is decoded in software from EXTI edges. Ignore valid-looking quadrature
+ * transitions that occur less than 25 us after the previous accepted edge.
+ * This does not depend on the exact CV PPR/gear ratio and can be tuned later.
  */
-#define APP_CPR_WR                       3468.0f
-#define APP_CPR_WL                       3468.0f
-#define APP_CPR_BR                       422.4f
-#define APP_CPR_BL                       422.4f
-#define APP_CPR_CV                       440.0f
-
-/* Flip to -1.0f if measured RPM sign is opposite to your chosen positive direction. */
-#define APP_ENCODER_SIGN_WR              1.0f
-#define APP_ENCODER_SIGN_WL              1.0f
-#define APP_ENCODER_SIGN_BR              -1.0f
-#define APP_ENCODER_SIGN_BL              1.0f
-#define APP_ENCODER_SIGN_CV              1.0f
-
-/* Flip to -1.0f if positive PID output rotates the motor in the wrong direction. */
-#define APP_MOTOR_SIGN_WR                1.0f
-#define APP_MOTOR_SIGN_WL                1.0f
-#define APP_MOTOR_SIGN_BR                1.0f
-#define APP_MOTOR_SIGN_BL                1.0f
-#define APP_MOTOR_SIGN_CV                1.0f
-
-/* ESTOP is currently PA4 input with pull-up, so active-low is the default assumption. */
-#define APP_ESTOP_ACTIVE_LOW             0U
+#define APP_AUX_ENCODER_TIM_FILTER         15U
+#define APP_CV_MIN_EDGE_US                 25U
 
 /*
- * Initial PIDF values.
- * Kf is fixed at 0.0f in this project. Kp/Ki/Kd/Tf can be replaced at runtime by UART.
- * Initial gains are intentionally zero for a safe first power-up.
+ * Auxiliary speed estimator for BR/BL/CV.
+ *
+ * At normal speed, use encoder count change over a 20 ms window. This is much
+ * less sensitive to individual edge timing jitter than the M/T estimate.
+ * When fewer than 4 counts are observed in the window, fall back to the M/T
+ * estimate so very-low-speed resolution is retained.
+ *
+ * The selected raw estimate is then low-pass filtered before it is used by
+ * PIDF and sent in normal feedback/SYSID packets.
  */
-#define APP_PID_WR_KP                    0.0f
-#define APP_PID_WR_KI                    0.0f
-#define APP_PID_WR_KD                    0.0f
-#define APP_PID_WR_TF                    0.010f
+#define APP_AUX_RPM_WINDOW_TICKS           2U          /* 2 x 10 ms = 20 ms */
+#define APP_AUX_RPM_WINDOW_MIN_COUNTS      4U
+#define APP_BRBL_RPM_LPF_HZ               10.0f
+#define APP_CV_RPM_LPF_HZ                  7.0f
 
-#define APP_PID_WL_KP                    0.0f
-#define APP_PID_WL_KI                    0.0f
-#define APP_PID_WL_KD                    0.0f
-#define APP_PID_WL_TF                    0.010f
+/* USART6 protocol target baud rate. */
+#define APP_UART_BAUD                     1000000U
 
-#define APP_PID_BR_KP                    0.0f
-#define APP_PID_BR_KI                    0.0f
-#define APP_PID_BR_KD                    0.0f
-#define APP_PID_BR_TF                    0.010f
+/*
+ * Effective encoder counts per mechanical OUTPUT-shaft revolution.
+ *
+ * These are the current calibrated/configured values used by the firmware.
+ * Keep them based on measured output-shaft counts rather than relying only on
+ * vendor PPR/gear-ratio labels, which have varied between the installed motors.
+ */
+#define APP_CPR_WR                        3264.0f
+#define APP_CPR_WL                        3264.0f
+#define APP_CPR_BR                        400.0f
+#define APP_CPR_BL                        400.0f
+#define APP_CPR_CV                        3960.0f
 
-#define APP_PID_BL_KP                    0.0f
-#define APP_PID_BL_KI                    0.0f
-#define APP_PID_BL_KD                    0.0f
-#define APP_PID_BL_TF                    0.010f
+/* Maximum accepted closed-loop speed references. */
+#define APP_MAX_RPM_WR                    100.0f
+#define APP_MAX_RPM_WL                    100.0f
+#define APP_MAX_RPM_BR                    400.0f
+#define APP_MAX_RPM_BL                    400.0f
+#define APP_MAX_RPM_CV                    80.0f
 
-#define APP_PID_CV_KP                    0.0f
-#define APP_PID_CV_KI                    0.0f
-#define APP_PID_CV_KD                    0.0f
-#define APP_PID_CV_TF                    0.010f
+/*
+ * Nominal working speeds used for normal operation and PID validation.
+ * These stay slightly below the accepted limits where practical.
+ */
+#define APP_NOMINAL_RPM_WR                95.0f
+#define APP_NOMINAL_RPM_WL                95.0f
+#define APP_NOMINAL_RPM_BR                390.0f
+#define APP_NOMINAL_RPM_BL                390.0f
+#define APP_NOMINAL_RPM_CV                80.0f
+
+/* Flip to -1.0f if measured RPM sign is opposite to the chosen positive direction. */
+#define APP_ENCODER_SIGN_WR              -1.0f
+#define APP_ENCODER_SIGN_WL               1.0f
+#define APP_ENCODER_SIGN_BR               1.0f
+#define APP_ENCODER_SIGN_BL               1.0f
+#define APP_ENCODER_SIGN_CV               1.0f
+
+/* Flip to -1.0f if positive controller output rotates the motor in the wrong direction. */
+#define APP_MOTOR_SIGN_WR                -1.0f
+#define APP_MOTOR_SIGN_WL                -1.0f
+#define APP_MOTOR_SIGN_BR                 1.0f
+#define APP_MOTOR_SIGN_BL                 1.0f
+#define APP_MOTOR_SIGN_CV                -1.0f
+
+/*
+ * ESTOP wiring confirmed on PA4:
+ *   released -> LOW (~0 V)
+ *   pressed  -> HIGH (~3.3 V)
+ * Therefore ESTOP is active-HIGH.
+ */
+#define APP_ESTOP_ACTIVE_LOW              0U
+
+/*
+ * PID update sanity bounds.
+ * These are intentionally broad guards against corrupt/pathological values;
+ * they are not intended to constrain normal controller tuning.
+ */
+#define APP_PID_GAIN_MAX                  100000.0f
+#define APP_PID_TF_MAX_S                  10.0f
+
+/*
+ * Default PIDF values.
+ * Kf is fixed at 0.0f. Kp/Ki/Kd/Tf can still be replaced at runtime by UART.
+ * These gains are in STM32 PWM-count output units.
+ */
+#define APP_PID_WR_KP                     43.157708f
+#define APP_PID_WR_KI                     980.674755f
+#define APP_PID_WR_KD                    -0.572624f
+#define APP_PID_WR_TF                     0.037982f
+
+#define APP_PID_WL_KP                     37.136079f
+#define APP_PID_WL_KI                     961.808181f
+#define APP_PID_WL_KD                    -0.423237f
+#define APP_PID_WL_TF                     0.033914f
+
+#define APP_PID_BR_KP                     3.338040f
+#define APP_PID_BR_KI                     98.367363f
+#define APP_PID_BR_KD                     0.000000f
+#define APP_PID_BR_TF                     0.000000f
+
+#define APP_PID_BL_KP                     2.536828f
+#define APP_PID_BL_KI                     87.606945f
+#define APP_PID_BL_KD                     0.000000f
+#define APP_PID_BL_TF                     0.000000f
+
+#define APP_PID_CV_KP                     421.522160f
+#define APP_PID_CV_KI                     2928.777621f
+#define APP_PID_CV_KD                     13.099506f
+#define APP_PID_CV_TF                     0.006197f
 
 #endif /* APP_CONFIG_H */
