@@ -75,11 +75,21 @@
 #define APP_CPR_CV                        3960.0f
 
 /* Maximum accepted closed-loop speed references. */
-#define APP_MAX_RPM_WR                    200.0f
-#define APP_MAX_RPM_WL                    200.0f
+#define APP_MAX_RPM_WR                    100.0f
+#define APP_MAX_RPM_WL                    100.0f
 #define APP_MAX_RPM_BR                    400.0f
 #define APP_MAX_RPM_BL                    400.0f
-#define APP_MAX_RPM_CV                    150.0f
+#define APP_MAX_RPM_CV                    80.0f
+
+/*
+ * Nominal working speeds used for normal operation and PID validation.
+ * These stay slightly below the accepted limits where practical.
+ */
+#define APP_NOMINAL_RPM_WR                95.0f
+#define APP_NOMINAL_RPM_WL                95.0f
+#define APP_NOMINAL_RPM_BR                390.0f
+#define APP_NOMINAL_RPM_BL                390.0f
+#define APP_NOMINAL_RPM_CV                80.0f
 
 /* Flip to -1.0f if measured RPM sign is opposite to the chosen positive direction. */
 #define APP_ENCODER_SIGN_WR              -1.0f
