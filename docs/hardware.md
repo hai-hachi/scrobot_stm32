@@ -76,3 +76,20 @@ cube2.ioc
 ```
 
 When changing timers, pin mappings, DMA, clock configuration, or UART settings, update the CubeMX configuration and verify that the application-level constants still match.
+
+
+## Motor calibration and operating speeds
+
+Current calibrated output-shaft encoder constants and closed-loop references:
+
+| Motor | Encoder CPR | Max accepted RPM | Nominal working RPM |
+|---|---:|---:|---:|
+| WR | 3264 | 100 | 95 |
+| WL | 3264 | 100 | 95 |
+| BR | 400 | 400 | 390 |
+| BL | 400 | 400 | 390 |
+| CV | 3960 | 80 | 80 |
+
+The firmware values in `Core/Inc/app_config.h` are the source of truth for
+runtime limits. Re-run encoder calibration, system identification, and PIDF
+tuning if the motor, gearbox, encoder, or speed-estimator configuration changes.
