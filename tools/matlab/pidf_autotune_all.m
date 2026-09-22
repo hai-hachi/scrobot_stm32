@@ -43,6 +43,17 @@ dutyPercentFullScale = 100;
 % Convert MATLAB controller output [% duty] to STM32 PWM counts.
 firmwareScale = pwmARR / dutyPercentFullScale;   % 49.99
 
+% Closed-loop targets
+settlingTarget_s = 0.10;       % 2% settling time must be below 0.1 s
+overshootTarget_pct = 2.0;     % percent overshoot must be below 2%
+
+% Search a range of robust PIDF designs.
+% The 100 Hz sample rate gives a sampling angular frequency of 2*pi/Ts.
+% Keep the requested crossover well below it.
+sampleAngularFrequency = 2*pi/Ts;
+wcCandidates = linspace(5,0.15*sampleAngularFrequency,60);
+phaseMarginCandidates = [65 70 75 80 85];
+
 results = table();
 
 %% Process all motors
@@ -393,36 +404,236 @@ for m = 1:numel(motors)
         'IFormula','Trapezoidal', ...
         'DFormula','Trapezoidal');
 
-    %% Tune PIDF
+    %% ============================================================
+    %  TARGET-BASED PIDF TUNING
+    % =============================================================
+    %
+    % pidtune does not directly accept settling-time and overshoot
+    % constraints. Therefore search crossover frequency and phase margin,
+    % validate each resulting digital closed loop in the time domain, and
+    % select the least aggressive design that satisfies both targets.
 
-    [C_percent,tuneInfo] = pidtune( ...
-        plantForTune, ...
-        Ctemplate);
+    selectedController = [];
+    selectedTuneInfo = [];
+    selectedClosedLoop = [];
 
-    %% Confirm controller implementation
+    selectedSettlingTime = Inf;
+    selectedOvershoot = Inf;
+    selectedRiseTime = Inf;
+    selectedCrossover = Inf;
+    selectedTargetPM = NaN;
+    selectedActualPM = NaN;
+
+    foundTargetDesign = false;
+
+    bestFallbackScore = Inf;
+    fallbackController = [];
+    fallbackTuneInfo = [];
+    fallbackClosedLoop = [];
+    fallbackSettlingTime = Inf;
+    fallbackOvershoot = Inf;
+    fallbackRiseTime = Inf;
+    fallbackCrossover = NaN;
+    fallbackTargetPM = NaN;
+    fallbackActualPM = NaN;
+
+    for pmTarget = phaseMarginCandidates
+
+        tuneOptions = pidtuneOptions( ...
+            'PhaseMargin',pmTarget, ...
+            'DesignFocus','reference-tracking');
+
+        for wcTarget = wcCandidates
+
+            try
+
+                [Ctry,infoTry] = pidtune( ...
+                    plantForTune, ...
+                    Ctemplate, ...
+                    wcTarget, ...
+                    tuneOptions);
+
+                CLtry = feedback( ...
+                    Ctry * plantForTune, ...
+                    1);
+
+                if ~isstable(CLtry)
+                    continue;
+                end
+
+                % Evaluate the actual sampled closed-loop step response.
+                S = stepinfo( ...
+                    CLtry, ...
+                    'SettlingTimeThreshold',0.02);
+
+                Ts_try = S.SettlingTime;
+                OS_try = S.Overshoot;
+                Tr_try = S.RiseTime;
+
+                if ~isfinite(Ts_try) || ~isfinite(OS_try)
+                    continue;
+                end
+
+                meetsTargets = ...
+                    Ts_try < settlingTarget_s && ...
+                    OS_try < overshootTarget_pct;
+
+                % Normalized target violation.
+                settlingViolation = ...
+                    max(0,Ts_try/settlingTarget_s - 1);
+
+                overshootViolation = ...
+                    max(0,OS_try/overshootTarget_pct - 1);
+
+                fallbackScore = ...
+                    settlingViolation^2 + ...
+                    overshootViolation^2 + ...
+                    1e-4*wcTarget;
+
+                if fallbackScore < bestFallbackScore
+
+                    bestFallbackScore = fallbackScore;
+
+                    fallbackController = Ctry;
+                    fallbackTuneInfo = infoTry;
+                    fallbackClosedLoop = CLtry;
+
+                    fallbackSettlingTime = Ts_try;
+                    fallbackOvershoot = OS_try;
+                    fallbackRiseTime = Tr_try;
+
+                    fallbackCrossover = wcTarget;
+                    fallbackTargetPM = pmTarget;
+
+                    if isfield(infoTry,'PhaseMargin')
+                        fallbackActualPM = infoTry.PhaseMargin;
+                    else
+                        fallbackActualPM = NaN;
+                    end
+
+                end
+
+                if meetsTargets
+
+                    % Prefer the lowest crossover frequency that meets both
+                    % requirements. This reduces noise sensitivity/control
+                    % effort compared with simply taking the fastest design.
+                    if ~foundTargetDesign || ...
+                       wcTarget < selectedCrossover || ...
+                       (abs(wcTarget-selectedCrossover) < 1e-12 && ...
+                        OS_try < selectedOvershoot)
+
+                        foundTargetDesign = true;
+
+                        selectedController = Ctry;
+                        selectedTuneInfo = infoTry;
+                        selectedClosedLoop = CLtry;
+
+                        selectedSettlingTime = Ts_try;
+                        selectedOvershoot = OS_try;
+                        selectedRiseTime = Tr_try;
+
+                        selectedCrossover = wcTarget;
+                        selectedTargetPM = pmTarget;
+
+                        if isfield(infoTry,'PhaseMargin')
+                            selectedActualPM = infoTry.PhaseMargin;
+                        else
+                            selectedActualPM = NaN;
+                        end
+
+                    end
+
+                end
+
+            catch ME
+
+                % Some crossover/phase-margin combinations may be infeasible
+                % for a particular identified plant.
+                fprintf( ...
+                    "Tune skipped: wc=%.2f rad/s, PM=%g deg: %s\n", ...
+                    wcTarget, ...
+                    pmTarget, ...
+                    ME.message);
+
+            end
+
+        end
+
+    end
+
+    %% Select target-meeting design or closest feasible fallback
+
+    if foundTargetDesign
+
+        C_percent = selectedController;
+        tuneInfo = selectedTuneInfo;
+        closedLoop = selectedClosedLoop;
+
+        settlingTime_s = selectedSettlingTime;
+        overshoot_pct = selectedOvershoot;
+        riseTime_s = selectedRiseTime;
+
+        selectedWc = selectedCrossover;
+        selectedPMTarget = selectedTargetPM;
+        selectedPMActual = selectedActualPM;
+
+        meetsTargets = true;
+
+    else
+
+        if isempty(fallbackController)
+
+            warning( ...
+                "%s: no stable PIDF design was found in the search range.", ...
+                motor);
+
+            continue;
+
+        end
+
+        C_percent = fallbackController;
+        tuneInfo = fallbackTuneInfo;
+        closedLoop = fallbackClosedLoop;
+
+        settlingTime_s = fallbackSettlingTime;
+        overshoot_pct = fallbackOvershoot;
+        riseTime_s = fallbackRiseTime;
+
+        selectedWc = fallbackCrossover;
+        selectedPMTarget = fallbackTargetPM;
+        selectedPMActual = fallbackActualPM;
+
+        meetsTargets = false;
+
+        warning( ...
+            "%s could not satisfy Ts < %.3f s and OS < %.2f %% within the tuning search. Using closest stable design.", ...
+            motor, ...
+            settlingTarget_s, ...
+            overshootTarget_pct);
+
+    end
+
+    %% Confirm controller implementation and achieved performance
 
     fprintf("\nPIDF TUNING IMPLEMENTATION\n");
     fprintf("----------------------------------------\n");
-    fprintf("Controller sample time = %.6f s\n",C_percent.Ts);
-    fprintf("Integral formula        = %s\n",C_percent.IFormula);
-    fprintf("Derivative formula      = %s\n",C_percent.DFormula);
-    fprintf("Tuning plant            = %s\n",tunePlantSource);
+    fprintf("Controller sample time  = %.6f s\n",C_percent.Ts);
+    fprintf("Integral formula         = %s\n",C_percent.IFormula);
+    fprintf("Derivative formula       = %s\n",C_percent.DFormula);
+    fprintf("Tuning plant             = %s\n",tunePlantSource);
+    fprintf("Selected crossover       = %.4f rad/s\n",selectedWc);
+    fprintf("Target phase margin      = %.2f deg\n",selectedPMTarget);
+    fprintf("Actual phase margin      = %.2f deg\n",selectedPMActual);
 
-    if isfield(tuneInfo,'CrossoverFrequency')
-
-        fprintf( ...
-            "Crossover frequency     = %.4f rad/s\n", ...
-            tuneInfo.CrossoverFrequency);
-
-    end
-
-    if isfield(tuneInfo,'PhaseMargin')
-
-        fprintf( ...
-            "Phase margin            = %.2f deg\n", ...
-            tuneInfo.PhaseMargin);
-
-    end
+    fprintf("\nCLOSED-LOOP TARGETS\n");
+    fprintf("----------------------------------------\n");
+    fprintf("Settling time target     < %.3f s\n",settlingTarget_s);
+    fprintf("Settling time achieved   = %.5f s\n",settlingTime_s);
+    fprintf("Overshoot target         < %.2f %%\n",overshootTarget_pct);
+    fprintf("Overshoot achieved       = %.3f %%\n",overshoot_pct);
+    fprintf("Rise time                = %.5f s\n",riseTime_s);
+    fprintf("Targets satisfied        = %s\n",string(meetsTargets));
 
     %% MATLAB PIDF gains
     %
@@ -503,11 +714,7 @@ for m = 1:numel(motors)
 
     end
 
-    %% Closed-loop model using actual digital controller form
-
-    closedLoop = feedback( ...
-        C_percent * plantForTune, ...
-        1);
+    %% Closed-loop stability using selected digital controller
 
     closedLoopStable = isstable(closedLoop);
 
@@ -584,6 +791,13 @@ for m = 1:numel(motors)
         bestModelName, ...
         bestFit, ...
         string(tunePlantSource), ...
+        selectedWc, ...
+        selectedPMTarget, ...
+        selectedPMActual, ...
+        settlingTime_s, ...
+        overshoot_pct, ...
+        riseTime_s, ...
+        meetsTargets, ...
         Kp_percent, ...
         Ki_percent, ...
         Kd_percent, ...
@@ -599,6 +813,13 @@ for m = 1:numel(motors)
         'BestModel', ...
         'BestFit_pct', ...
         'TuningPlant', ...
+        'Crossover_rad_s', ...
+        'TargetPhaseMargin_deg', ...
+        'ActualPhaseMargin_deg', ...
+        'SettlingTime_s', ...
+        'Overshoot_pct', ...
+        'RiseTime_s', ...
+        'MeetsTargets', ...
         'Kp_percent', ...
         'Ki_percent', ...
         'Kd_percent', ...
@@ -648,3 +869,8 @@ fprintf( ...
 fprintf( ...
     "Controller implementation: Ts = %.3f s, Trapezoidal I, Trapezoidal/Tustin D.\n", ...
     Ts);
+
+fprintf( ...
+    "Design targets: settling time < %.3f s, overshoot < %.2f %%.\n", ...
+    settlingTarget_s, ...
+    overshootTarget_pct);
