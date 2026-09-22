@@ -112,33 +112,33 @@
 #define APP_PID_TF_MAX_S                  10.0f
 
 /*
- * Initial PIDF values.
- * Kf is fixed at 0.0f. Kp/Ki/Kd/Tf can be replaced at runtime by UART.
- * Initial gains are intentionally zero for a safe first power-up.
+ * Default PIDF values.
+ * Kf is fixed at 0.0f. Kp/Ki/Kd/Tf can still be replaced at runtime by UART.
+ * These gains are in STM32 PWM-count output units.
  */
-#define APP_PID_WR_KP                     0.0f
-#define APP_PID_WR_KI                     0.0f
-#define APP_PID_WR_KD                     0.0f
-#define APP_PID_WR_TF                     0.010f
+#define APP_PID_WR_KP                     43.157708f
+#define APP_PID_WR_KI                     980.674755f
+#define APP_PID_WR_KD                    -0.572624f
+#define APP_PID_WR_TF                     0.037982f
 
-#define APP_PID_WL_KP                     0.0f
-#define APP_PID_WL_KI                     0.0f
-#define APP_PID_WL_KD                     0.0f
-#define APP_PID_WL_TF                     0.010f
+#define APP_PID_WL_KP                     37.136079f
+#define APP_PID_WL_KI                     961.808181f
+#define APP_PID_WL_KD                    -0.423237f
+#define APP_PID_WL_TF                     0.033914f
 
-#define APP_PID_BR_KP                     0.0f
-#define APP_PID_BR_KI                     0.0f
-#define APP_PID_BR_KD                     0.0f
-#define APP_PID_BR_TF                     0.010f
+#define APP_PID_BR_KP                     3.338040f
+#define APP_PID_BR_KI                     98.367363f
+#define APP_PID_BR_KD                     0.000000f
+#define APP_PID_BR_TF                     0.000000f
 
-#define APP_PID_BL_KP                     0.0f
-#define APP_PID_BL_KI                     0.0f
-#define APP_PID_BL_KD                     0.0f
-#define APP_PID_BL_TF                     0.010f
+#define APP_PID_BL_KP                     2.536828f
+#define APP_PID_BL_KI                     87.606945f
+#define APP_PID_BL_KD                     0.000000f
+#define APP_PID_BL_TF                     0.000000f
 
-#define APP_PID_CV_KP                     0.0f
-#define APP_PID_CV_KI                     0.0f
-#define APP_PID_CV_KD                     0.0f
-#define APP_PID_CV_TF                     0.010f
+#define APP_PID_CV_KP                     421.522160f
+#define APP_PID_CV_KI                     2928.777621f
+#define APP_PID_CV_KD                     13.099506f
+#define APP_PID_CV_TF                     0.006197f
 
 #endif /* APP_CONFIG_H */
