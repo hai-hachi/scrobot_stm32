@@ -126,14 +126,14 @@
  * Kf is fixed at 0.0f. Kp/Ki/Kd/Tf can still be replaced at runtime by UART.
  * These gains are in STM32 PWM-count output units.
  */
-#define APP_PID_WR_KP                     43.157708f
-#define APP_PID_WR_KI                     980.674755f
-#define APP_PID_WR_KD                    -0.572624f
-#define APP_PID_WR_TF                     0.037982f
+#define APP_PID_WR_KP                     90.05174f
+#define APP_PID_WR_KI                     1001.711398f
+#define APP_PID_WR_KD                    -0.983304f
+#define APP_PID_WR_TF                     0.026706f
 
-#define APP_PID_WL_KP                     37.136079f
-#define APP_PID_WL_KI                     961.808181f
-#define APP_PID_WL_KD                    -0.423237f
+#define APP_PID_WL_KP                     86.591532f
+#define APP_PID_WL_KI                     1277.008352f
+#define APP_PID_WL_KD                    -1.177326f
 #define APP_PID_WL_TF                     0.033914f
 
 #define APP_PID_BR_KP                     3.338040f
