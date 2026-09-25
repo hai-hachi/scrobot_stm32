@@ -13,7 +13,14 @@ from .protocol import (
 
 class SerialClient:
     def __init__(self, port: str, baud: int = 1_000_000, timeout: float = 0.02):
-        self.ser = serial.Serial(port=port, baudrate=baud, timeout=timeout)
+        # Linux/POSIX exclusive lock. This prevents the tuning/debug tools from
+        # opening the same UART while ros2_control owns it (and vice versa).
+        self.ser = serial.Serial(
+            port=port,
+            baudrate=baud,
+            timeout=timeout,
+            exclusive=True,
+        )
         self.parser = FrameParser()
         self.seq = 0
 
