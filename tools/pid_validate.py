@@ -32,6 +32,10 @@ from scrobot_protocol import (
     decode_feedback,
     decode_pid_response,
     decode_error,
+    status_names,
+    STATUS_ARMED,
+    STATUS_ESTOP,
+    STATUS_COMM_TIMEOUT,
 )
 
 
@@ -85,6 +89,42 @@ def get_current_pid(client: SerialClient, motor: str, timeout: float = 0.75) -> 
                 return pid
 
     raise TimeoutError(f"Timed out reading PIDF parameters for {motor}")
+
+
+
+def wait_for_armed(client: SerialClient, timeout: float = 0.75) -> dict:
+    """Wait for FEEDBACK confirming the STM32 is actually armed."""
+    deadline = time.monotonic() + timeout
+    last_fb = None
+
+    while time.monotonic() < deadline:
+        for frame in client.read_frames(0.05):
+            if frame.msg_type == TYPE_ERROR:
+                err = decode_error(frame.payload)
+                raise RuntimeError(f"STM32 ERROR while arming: {err}")
+
+            if frame.msg_type != TYPE_FEEDBACK:
+                continue
+
+            fb = decode_feedback(frame.payload)
+            last_fb = fb
+
+            if fb["status"] & STATUS_ESTOP:
+                names = ",".join(status_names(fb["status"])) or "NONE"
+                raise RuntimeError(
+                    f"Cannot arm: STM32 reports E-stop active; status={names}"
+                )
+
+            if fb["status"] & STATUS_ARMED:
+                return fb
+
+    if last_fb is None:
+        raise TimeoutError("Timed out waiting for STM32 FEEDBACK after ARM")
+
+    names = ",".join(status_names(last_fb["status"])) or "NONE"
+    raise RuntimeError(
+        f"STM32 did not enter ARMED state; last status={names}"
+    )
 
 
 def main():
@@ -154,6 +194,14 @@ def main():
         time.sleep(0.05)
         client.drain(0.05)
         client.arm()
+        armed_fb = wait_for_armed(client)
+        armed_names = ",".join(status_names(armed_fb["status"])) or "NONE"
+        print(f"STM32 arm confirmed: status={armed_names}")
+
+        # Send one zero setpoint immediately after arm confirmation so the
+        # 200 ms firmware command watchdog is refreshed before logging starts.
+        client.setpoint()
+        time.sleep(0.02)
 
         t0 = time.monotonic()
 
@@ -165,6 +213,7 @@ def main():
                 command = command_for_motor(args.motor, reference)
                 start = time.monotonic()
                 next_command = start
+                last_fb = None
 
                 while time.monotonic() - start < duration:
                     now = time.monotonic()
@@ -176,14 +225,36 @@ def main():
 
                     for frame in client.read_frames(0.01):
                         if frame.msg_type == TYPE_ERROR:
+                            err = decode_error(frame.payload)
+                            if last_fb is None:
+                                status_text = "no recent FEEDBACK"
+                            else:
+                                status_text = (
+                                    ",".join(status_names(last_fb["status"]))
+                                    or "NONE"
+                                )
                             raise RuntimeError(
-                                f"STM32 ERROR: {decode_error(frame.payload)}"
+                                f"STM32 ERROR: {err}; "
+                                f"last feedback status={status_text}"
                             )
 
                         if frame.msg_type != TYPE_FEEDBACK:
                             continue
 
                         fb = decode_feedback(frame.payload)
+                        last_fb = fb
+
+                        if not (fb["status"] & STATUS_ARMED):
+                            status_text = ",".join(status_names(fb["status"])) or "NONE"
+                            if fb["status"] & STATUS_ESTOP:
+                                reason = "E-stop became active"
+                            elif fb["status"] & STATUS_COMM_TIMEOUT:
+                                reason = "command timeout disarmed STM32"
+                            else:
+                                reason = "STM32 became disarmed"
+                            raise RuntimeError(
+                                f"{reason}; status={status_text}"
+                            )
 
                         writer.writerow({
                             "host_time_s": time.monotonic() - t0,
