@@ -92,12 +92,18 @@ def get_current_pid(client: SerialClient, motor: str, timeout: float = 0.75) -> 
 
 
 
-def wait_for_armed(client: SerialClient, timeout: float = 0.75) -> dict:
-    """Wait for FEEDBACK confirming the STM32 is actually armed."""
+def wait_for_armed(client: SerialClient, timeout: float = 1.5) -> dict:
+    """Retry ARM until FEEDBACK confirms the STM32 is actually armed."""
     deadline = time.monotonic() + timeout
+    next_arm = 0.0
     last_fb = None
 
     while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_arm:
+            client.arm()
+            next_arm = now + 0.10
+
         for frame in client.read_frames(0.05):
             if frame.msg_type == TYPE_ERROR:
                 err = decode_error(frame.payload)
@@ -193,7 +199,6 @@ def main():
         client.disarm()
         time.sleep(0.05)
         client.drain(0.05)
-        client.arm()
         armed_fb = wait_for_armed(client)
         armed_names = ",".join(status_names(armed_fb["status"])) or "NONE"
         print(f"STM32 arm confirmed: status={armed_names}")
