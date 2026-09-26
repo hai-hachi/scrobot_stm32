@@ -215,6 +215,7 @@ static volatile bool estop_active = false;
 static bool previous_estop_active = false;
 static volatile bool armed = false;
 static uint16_t last_setpoint_seq = 0U;
+static volatile uint32_t last_disarm_reason = APP_STATUS_LAST_DISARM_BOOT;
 
 /* System-identification state. */
 static volatile bool sysid_active = false;
@@ -861,6 +862,7 @@ static void App_SafetyService(void)
         App_SetDriverEnable(false);
 
         armed = false;
+        last_disarm_reason = APP_STATUS_LAST_DISARM_ESTOP;
         sysid_active = false;
         sysid_duty = 0.0f;
 
@@ -881,9 +883,10 @@ static void App_ZeroReferences(void)
     motorCV.ref_rpm = 0.0f;
 }
 
-static void App_Disarm(void)
+static void App_DisarmWithReason(uint32_t reason)
 {
     armed = false;
+    last_disarm_reason = reason;
     sysid_active = false;
     sysid_duty = 0.0f;
 
@@ -895,6 +898,11 @@ static void App_Disarm(void)
     Motor_StopOutput(&motorCV);
     Motor_ResetAllPID();
     App_SetDriverEnable(false);
+}
+
+static void App_Disarm(void)
+{
+    App_DisarmWithReason(APP_STATUS_LAST_DISARM_HOST);
 }
 
 static bool App_TryArm(void)
@@ -1653,7 +1661,7 @@ static void App_ControlUpdate(void)
 
     if ((HAL_GetTick() - last_setpoint_ms) > APP_COMM_TIMEOUT_MS) {
         comm_timeout_active = true;
-        App_Disarm();
+        App_DisarmWithReason(APP_STATUS_LAST_DISARM_COMM_TIMEOUT);
         App_UpdateDebugSnapshot();
         UART_QueueFeedback();
         return;
@@ -1697,7 +1705,7 @@ static void App_ConfigureAuxEncoderFilters(void)
 
 static void App_UpdateDebugSnapshot(void)
 {
-    uint32_t status = app_fault_flags;
+    uint32_t status = app_fault_flags | last_disarm_reason;
 
     if (armed) {
         status |= APP_STATUS_ARMED;
@@ -1938,6 +1946,7 @@ void App_Init(void)
 
     /* Boot is always DISARMED regardless of ESTOP state. */
     armed = false;
+    last_disarm_reason = APP_STATUS_LAST_DISARM_BOOT;
     App_SetDriverEnable(false);
     last_setpoint_ms = HAL_GetTick();
     comm_timeout_active = true;
