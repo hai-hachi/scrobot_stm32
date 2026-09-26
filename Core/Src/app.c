@@ -308,6 +308,7 @@ static bool App_EstopIsActive(void);
 static void App_SetDriverEnable(bool enable);
 static void App_SafetyService(void);
 static void App_ZeroReferences(void);
+static void App_DisarmWithReason(uint32_t reason);
 static void App_Disarm(void);
 static bool App_TryArm(void);
 static void Sysid_Stop(bool disarm_after);
