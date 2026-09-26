@@ -16,7 +16,14 @@ enum
     APP_STATUS_UART_ERROR_SEEN    = (1UL << 4),
     APP_STATUS_INVALID_OUTPUT     = (1UL << 5),
     APP_STATUS_TX_QUEUE_DROP_SEEN = (1UL << 6),
-    APP_STATUS_INVALID_COMMAND    = (1UL << 7)
+    APP_STATUS_INVALID_COMMAND    = (1UL << 7),
+
+    /* Persistent reason for the most recent disarm event. */
+    APP_STATUS_LAST_DISARM_ESTOP         = (1UL << 8),
+    APP_STATUS_LAST_DISARM_COMM_TIMEOUT  = (1UL << 9),
+    APP_STATUS_LAST_DISARM_HOST          = (1UL << 10),
+    APP_STATUS_LAST_DISARM_SYSID_TIMEOUT = (1UL << 11),
+    APP_STATUS_LAST_DISARM_BOOT          = (1UL << 12)
 };
 
 /*
