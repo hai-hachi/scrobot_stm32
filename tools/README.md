@@ -147,3 +147,19 @@ python pid_validate.py --port /dev/ttyAMA0 --motor CV
 
 For the complete acquisition, SCP, MATLAB, tuning, upload, and validation
 sequence, see [../docs/tuning_workflow.md](../docs/tuning_workflow.md).
+
+
+## UART troubleshooting on Jetson Orin
+
+The current Jetson link uses `/dev/ttyTHS1` <-> STM32 USART6 at 1,000,000 baud.
+
+Important status behavior:
+
+- `COMM_TIMEOUT` is a live safety state. It means no valid normal SETPOINT heartbeat has been received for more than 200 ms. This is expected when only `serial_monitor.py` is running, because the monitor does not send motor setpoints.
+- `UART_ERROR` is sticky fault history. It means at least one STM32 USART hardware error has occurred since boot; check whether the diagnostics `uart_errors` counter is still increasing.
+- The firmware stores the latest disarm reason separately. Updated host tools decode `LAST_DISARM_ESTOP`, `LAST_DISARM_COMM_TIMEOUT`, `LAST_DISARM_HOST`, `LAST_DISARM_SYSID_TIMEOUT`, and `LAST_DISARM_BOOT`.
+- `serial_monitor.py` now prints `state=ARMED` or `state=DISARMED` explicitly.
+
+Observed bring-up issue on the current robot: occasional USART6 receive errors can drop individual host requests while 100 Hz STM32 FEEDBACK continues normally. Shorter Jetson-TX/STM32-RX wiring substantially improved request reliability. Keep the UART wiring short, maintain a solid common ground, and route it away from motor/PWM/power wiring.
+
+The direct tools and ROS hardware driver use exclusive UART ownership. Do not run `serial_monitor.py`, PID tools, and ros2_control at the same time.
