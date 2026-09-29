@@ -55,10 +55,22 @@ def wait_pid_response(client, motor_id: int, timeout: float = 0.75):
     raise TimeoutError("Timed out waiting for STM32 PID response")
 
 
-def get_pid(client, motor: str):
+def get_pid(client, motor: str, attempts: int = 3):
     motor_id = MOTOR_IDS[motor]
-    client.pid_get(motor_id)
-    return wait_pid_response(client, motor_id)
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        client.pid_get(motor_id)
+        try:
+            return wait_pid_response(client, motor_id)
+        except TimeoutError as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(0.02)
+
+    raise TimeoutError(
+        f"Timed out waiting for STM32 PID response after {attempts} attempts"
+    ) from last_error
 
 
 def set_pid(client, motor: str, kp: float, ki: float, kd: float, tf: float):
