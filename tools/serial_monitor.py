@@ -5,6 +5,7 @@ import time
 from scrobot_protocol import (
     SerialClient, TYPE_FEEDBACK, TYPE_DIAGNOSTICS, TYPE_INFO_RESPONSE, TYPE_ERROR,
     decode_feedback, decode_diagnostics, decode_info, decode_error, status_names,
+    STATUS_ARMED,
 )
 
 
@@ -32,9 +33,12 @@ def main():
                     now = time.monotonic()
                     if now - last_print >= 1.0 / args.rate:
                         f = decode_feedback(frame.payload)
-                        st = ",".join(status_names(f["status"])) or "NONE"
+                        names = status_names(f["status"])
+                        state = "ARMED" if (f["status"] & STATUS_ARMED) else "DISARMED"
+                        visible = [name for name in names if name != "ARMED"]
+                        st = ",".join(visible) or "NONE"
                         print(
-                            f'tick={f["control_tick"]:8d} status={st:24s} '
+                            f'tick={f["control_tick"]:8d} state={state:8s} status={st:44s} '
                             f'WR={f["rpm"]["WR"]:7.2f} WL={f["rpm"]["WL"]:7.2f} '
                             f'BR={f["rpm"]["BR"]:7.2f} BL={f["rpm"]["BL"]:7.2f} '
                             f'CV={f["rpm"]["CV"]:7.2f}'
